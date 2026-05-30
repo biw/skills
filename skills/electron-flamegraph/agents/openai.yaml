@@ -1,0 +1,6 @@
+interface:
+  display_name: "Electron Flamegraph"
+  short_description: "Profile Electron main-process CPU"
+  default_prompt: "Use $electron-flamegraph to profile and analyze an Electron slowdown."
+policy:
+  allow_implicit_invocation: true

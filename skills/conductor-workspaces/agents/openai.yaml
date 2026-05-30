@@ -1,0 +1,4 @@
+interface:
+  display_name: "Conductor Workspaces"
+  short_description: "Configure Conductor workspace scripts"
+  default_prompt: "Use $conductor-workspaces to configure conductor.json and workspace scripts."
