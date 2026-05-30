@@ -2,26 +2,14 @@
 
 [![skills.sh](https://skills.sh/b/biw/skills)](https://skills.sh/biw/skills)
 
-This repository is the public source for installable Agent Skills published from `biw/skills`.
+A set of useful skills for agents.
 
 ## Quickstart
 
-List available skills:
+Select and install skills:
 
 ```bash
-npx skills add biw/skills --list
-```
-
-Install a specific skill:
-
-```bash
-npx skills add biw/skills --skill <skill-name>
-```
-
-Install every skill:
-
-```bash
-npx skills add biw/skills --all
+npx skills add biw/skills
 ```
 
 ## Available Skills
