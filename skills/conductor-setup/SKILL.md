@@ -8,6 +8,8 @@ metadata:
 
 # Conductor Setup
 
+When this skill is invoked directly, proactively audit the repository’s Conductor setup and either apply the needed configuration changes or report that no changes are needed.
+
 Use this skill when configuring a repository for Conductor workspaces. Focus first on `conductor.json`; add or edit shell scripts only when the shared JSON should call reusable setup, run, or archive/shutdown commands.
 
 ## Workflow
