@@ -1,3 +1,6 @@
-display_name: Publish Agent Skills
-short_description: Create skills.sh-ready skill repos.
-default_prompt: Use this skill to create, validate, and publish Agent Skills from a GitHub skills repository.
+interface:
+  display_name: "Publish Agent Skills"
+  short_description: "Create skills.sh-ready skill repos"
+  default_prompt: "Use $publish-agent-skills to create, validate, and publish Agent Skills from a GitHub skills repository."
+policy:
+  allow_implicit_invocation: true

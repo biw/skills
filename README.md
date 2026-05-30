@@ -14,7 +14,7 @@ List available skills:
 npx skills add biw/skills --list
 ```
 
-Install a specific skill:
+Install a specific skill for the auto-detected agent:
 
 ```bash
 npx skills add biw/skills --skill <skill-name>
@@ -32,11 +32,27 @@ Install a specific skill for Codex:
 npx skills add biw/skills --skill <skill-name> --agent codex
 ```
 
-Install all skills:
+Install every skill for Claude Code:
+
+```bash
+npx skills add biw/skills --skill '*' --agent claude-code --yes
+```
+
+Install every skill for Codex:
+
+```bash
+npx skills add biw/skills --skill '*' --agent codex --yes
+```
+
+Install every skill for every supported agent:
 
 ```bash
 npx skills add biw/skills --all
 ```
+
+Claude Code project installs land under `.claude/skills/<skill-name>/SKILL.md`.
+Codex project installs land under `.agents/skills/<skill-name>/SKILL.md`.
+The shared `SKILL.md` is the source of truth for both agents. This repo also ships `agents/openai.yaml` for OpenAI/Codex-facing display metadata; Claude Code does not need a separate YAML file.
 
 For repo maintainers, install dependencies once and use the local pnpm wrapper:
 
@@ -50,7 +66,7 @@ pnpm skills add . --list
 
 - [`address-review-bots`](./skills/address-review-bots/SKILL.md): wait for and triage Claude, Devin, and similar GitHub PR review-bot feedback.
 - [`better-logging`](./skills/better-logging/SKILL.md): design durable operation outcome events so failures, latency, retries, and rollouts are queryable.
-- [`conductor-workspaces`](./skills/conductor-workspaces/SKILL.md): configure `conductor.json` and Conductor workspace scripts.
+- [`conductor-setup`](./skills/conductor-setup/SKILL.md): configure `conductor.json` and Conductor workspace scripts; use it as `/conductor-setup` in agent chats.
 - [`electron-flamegraph`](./skills/electron-flamegraph/SKILL.md): profile Electron main-process CPU usage and analyze `.cpuprofile` files.
 - [`publish-agent-skills`](./skills/publish-agent-skills/SKILL.md): create and maintain skills.sh-compatible Agent Skills repositories.
 
