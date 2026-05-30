@@ -1,12 +1,12 @@
 ---
-name: conductor-workspaces
+name: conductor-setup
 description: Configure conductor.json and Conductor workspace scripts for setup, run, archive/shutdown, env vars, large files, and shared caches.
 metadata:
   source: "biw/skills"
   homepage: "https://github.com/biw/skills"
 ---
 
-# Conductor Workspaces
+# Conductor Setup
 
 Use this skill when configuring a repository for Conductor workspaces. Focus first on `conductor.json`; add or edit shell scripts only when the shared JSON should call reusable setup, run, or archive/shutdown commands.
 

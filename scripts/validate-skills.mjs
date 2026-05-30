@@ -160,6 +160,55 @@ function validateSkill(filePath, metadata) {
   }
 }
 
+async function validateOpenAIConfig(skillPath) {
+  const configPath = path.join(path.dirname(skillPath), "agents", "openai.yaml");
+  const displayPath = relative(configPath);
+
+  let content;
+  try {
+    content = await readFile(configPath, "utf8");
+  } catch {
+    errors.push(`${displayPath}: missing OpenAI/Codex metadata file.`);
+    return;
+  }
+
+  let metadata;
+  try {
+    metadata = YAML.parse(content);
+  } catch (error) {
+    errors.push(`${displayPath}: invalid YAML: ${error.message}`);
+    return;
+  }
+
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    errors.push(`${displayPath}: metadata must be a YAML mapping.`);
+    return;
+  }
+
+  const interfaceMetadata = metadata.interface;
+  if (!interfaceMetadata || typeof interfaceMetadata !== "object" || Array.isArray(interfaceMetadata)) {
+    errors.push(`${displayPath}: interface must be a YAML mapping.`);
+    return;
+  }
+
+  for (const field of ["display_name", "short_description", "default_prompt"]) {
+    if (typeof interfaceMetadata[field] !== "string" || interfaceMetadata[field].trim() === "") {
+      errors.push(`${displayPath}: interface.${field} must be a non-empty string.`);
+    }
+  }
+
+  if (metadata.policy !== undefined) {
+    if (!metadata.policy || typeof metadata.policy !== "object" || Array.isArray(metadata.policy)) {
+      errors.push(`${displayPath}: policy must be a YAML mapping when present.`);
+    } else if (
+      metadata.policy.allow_implicit_invocation !== undefined &&
+      typeof metadata.policy.allow_implicit_invocation !== "boolean"
+    ) {
+      errors.push(`${displayPath}: policy.allow_implicit_invocation must be a boolean when present.`);
+    }
+  }
+}
+
 async function ensureDirectoryExists(directory) {
   try {
     const directoryStat = await stat(directory);
@@ -181,6 +230,7 @@ for (const skillPath of skills.sort()) {
 
   if (metadata) {
     validateSkill(skillPath, metadata);
+    await validateOpenAIConfig(skillPath);
   }
 }
 
