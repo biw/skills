@@ -1,4 +1,4 @@
-# biw Skills
+# `biw/skills`
 
 [![skills.sh](https://skills.sh/b/biw/skills)](https://skills.sh/biw/skills)
 
