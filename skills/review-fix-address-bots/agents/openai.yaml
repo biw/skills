@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review, Fix, and Address Bots"
+  short_description: "Run GPT-5.6 Sol review and bounded fix critique"
+  default_prompt: "Use $review-fix-address-bots to run two read-only GPT-5.6 Sol reviewers, resolve and re-review fixes, validate and push, then close the review-bot loop."
