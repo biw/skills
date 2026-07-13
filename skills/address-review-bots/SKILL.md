@@ -60,7 +60,7 @@ Fix `valid_actionable` comments automatically. Also fix `valid_low_risk_cleanup`
 Before moving on, make a compact classification table in your notes or final answer for every substantive bot observation:
 
 ```text
-permalink | claim | classification | evidence | action taken / why not
+permalink | isOutdated or n/a | claim | classification | evidence | reply/resolution action or why left open
 ```
 
 5. Apply scoped fixes and nearby tests for valid actionable comments.
@@ -81,6 +81,8 @@ git push
 
 8. Repeat from step 2 until there are no fresh valid actionable or valid low-risk cleanup bot comments, remaining comments are stale/non-actionable/false positives/user decisions, or further changes would be speculative.
 
+9. On each stable current head, scan unresolved in-scope review threads and apply the review-thread cleanup policy below before declaring the bot loop clean.
+
 Default to at most 8 fix-push loops unless the user explicitly asks to keep going.
 
 ## Review Judgment
@@ -91,7 +93,23 @@ Review bots may update an existing top-level summary comment instead of creating
 
 For stale inline comments, compare the snapshot head SHA, comment commit ID, and current code.
 
-When rejecting a comment, leave a short PR reply only when it helps future reviewers understand the decision. For inline comments, prefer replying in-thread if tooling supports it; otherwise, use a top-level PR comment with the permalink.
+For comments outside a resolvable review thread, leave a short PR reply when it helps future reviewers understand a rejection. Follow the stricter reply-before-resolve rules below for review threads.
+
+## Review-Thread Cleanup
+
+Query unresolved review threads with GitHub tooling that exposes the thread's `isResolved` and `isOutdated` fields. The snapshot helper's fresh/stale classification is based on comment SHA and time and is not a substitute for GitHub's `isOutdated` value. Confirm the PR head is still the expected current SHA before mutating any thread.
+
+Inspect the current code and classify every unresolved in-scope thread before resolving it:
+
+- For `isOutdated: true`, verify that the issue is fixed or no longer relevant on the current head. Resolve the thread only after that verification. No PR reply is required unless extra context would help. If the issue is still relevant, ambiguous, or needs a user decision, leave the thread unresolved.
+- For `isOutdated: false`, never resolve silently. If the issue is fixed or stale, first reply in that same review thread with a concise explanation and concrete evidence from the current head, such as the function or behavior that addresses the concern and the relevant test. Resolve the thread only after GitHub confirms the reply was posted. If the reply fails, leave the thread unresolved and report the failure.
+- Leave the thread unresolved when the finding is still valid, the correct fix is ambiguous, the evidence is weak, or resolution requires product, UX, public API, or architecture judgment. Report its permalink and why it remains open.
+
+Do not treat a `false_positive` classification by itself as permission to resolve a non-outdated thread. Resolve only when concrete current-head evidence establishes that the concern is stale or no longer applies, and post that evidence in-thread first.
+
+Example reply:
+
+> Resolved in the current head: `addOrReplaceNewerTarget` now delegates to `mergeReopenTargetFields`, which preserves `bundleId` when a focused-window target replaces an event-derived target. Covered by `tools.test.ts`.
 
 ## Self-Review Before Push
 
@@ -129,6 +147,10 @@ Report:
 - which comments were rejected or left for user decision, with permalinks,
 - the classification and rationale for every substantive bot observation,
 - the commit SHA(s) pushed,
-- the final validation command and result.
+- the final validation command and result,
+- the number of review threads resolved,
+- the number resolved silently because GitHub marked them `isOutdated: true`,
+- the number resolved after posting an explanatory in-thread reply,
+- every unresolved thread left open, with its permalink and rationale.
 
 If no valid comments remain, say that directly only after classifying each substantive observation. If review checks timed out, say what was checked and what is still unknown.
