@@ -17,8 +17,8 @@ npx skills add biw/skills
 - [`address-review-bots`](./skills/address-review-bots/SKILL.md): wait for and triage Claude, Devin, and similar GitHub PR review-bot feedback.
 - [`better-logging`](./skills/better-logging/SKILL.md): design durable operation outcome events so failures, latency, retries, and rollouts are queryable.
 - [`conductor-setup`](./skills/conductor-setup/SKILL.md): configure `.conductor/settings.toml`, migrate legacy `conductor.json`, and set up Conductor workspace scripts; use it as `/conductor-setup` in agent chats.
+- [`detailed-pr-description`](./skills/detailed-pr-description/SKILL.md): write review-ready GitHub PR descriptions with change context, gotchas, follow-up work, code snippets, and test coverage assessment.
 - [`electron-flamegraph`](./skills/electron-flamegraph/SKILL.md): profile Electron main-process CPU usage and analyze `.cpuprofile` files.
-- [`publish-agent-skills`](./skills/publish-agent-skills/SKILL.md): create and maintain skills.sh-compatible Agent Skills repositories.
 - [`review-fix-address-bots`](./skills/review-fix-address-bots/SKILL.md): run two read-only GPT-5.6 Sol reviews, resolve findings through bounded critique, and close GitHub review-bot feedback loops.
 
 ## License
