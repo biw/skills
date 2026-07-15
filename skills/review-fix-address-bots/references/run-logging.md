@@ -29,7 +29,7 @@ node scripts/review-run-log.mjs append \
 
 Useful events include `target_integrated`, `reviewer_session_started`, `reviewer_pass_completed`, `reviewer_continuity_verified`, `finding_classified`, `validation_completed`, `push_completed`, `review_bot_loop_completed`, and `run_blocked`. Events may evolve; keep names lower snake case.
 
-Record experimental inputs when they become known: custom-versus-bundled review prompt source and SHA-256 fingerprint, target/base/head SHAs, diff size, the requested five-reviewer model cohort, round limits, requested reasoning, launch mechanisms, retries, and relevant skill options. The helper fingerprints the skill instructions and logger automatically. Hash custom prompts instead of storing their contents.
+Record experimental inputs when they become known: custom-versus-bundled review prompt source and SHA-256 fingerprint, target/base/head SHAs, diff size, the requested reviewer cohort, round limits, requested reasoning, launch mechanisms, retries, and relevant skill options. The helper fingerprints the skill instructions and logger automatically. Hash custom prompts instead of storing their contents. The `start` example shows the default cohort; replace its configuration with the resolved user override when applicable.
 
 For every reviewer pass, record:
 
@@ -91,7 +91,7 @@ Always attempt `finish`, including for blocked or failed runs. Pass a summary wi
 }
 ```
 
-Include one reviewer object for each of `sol-1`, `terra-1`, `terra-2`, `luna-1`, and `luna-2`, even when a reviewer found no issues. Preserve applied model fields so comparisons reflect what actually ran rather than what was merely requested; leave an unavailable `modelApplied` unset so the helper groups it as `unknown`. Record every continuity attempt in `continuityChecks`, including retries and `tokenUsage: null` when the runtime exposes no accounting.
+Include one reviewer object for every configured reviewer, even when it found no issues. Preserve applied model and reasoning fields so comparisons and labels reflect what actually ran rather than what was merely requested; leave an unavailable `modelApplied` or `reasoningApplied` unset so the helper reports it as `unknown`. Record every continuity attempt in `continuityChecks`, including retries and `tokenUsage: null` when the runtime exposes no accounting.
 
 ```bash
 node scripts/review-run-log.mjs finish \
@@ -118,7 +118,7 @@ Append `.context/reviewer-usage-report.md` verbatim as the final section of the 
 ```markdown
 | Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost |
 |---|---:|---:|---:|---:|---:|---:|
-| Sol 1 | 100,000 | 90,000 | 2,000 | 1,200 | 102,000 | $0.1550 |
+| Sol1 (high) | 100,000 | 90,000 | 2,000 | 1,200 | 102,000 | $0.1550 |
 ```
 
 The generated table uses `n/a` for unavailable usage or estimates. If collection is unavailable, report the helper's reason before the final generated section, but do not have the parent model parse rollout files or invent replacement values. Preserve the raw reviewer/round/continuity/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.

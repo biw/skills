@@ -373,6 +373,7 @@ test('collects an unambiguous Codex reviewer session and renders deterministic M
           {
             reviewerId: 'sol-1',
             modelApplied: 'gpt-5.6-sol',
+            reasoningApplied: 'high',
             continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
             rounds: [{ phase: 'initial', round: 1, findingIds: [], tokenUsage: null }],
           },
@@ -399,7 +400,7 @@ test('collects an unambiguous Codex reviewer session and renders deterministic M
     const markdown = renderUsageTable(deriveMetrics(result.summary))
     assert.match(
       markdown,
-      /\| Sol 1 \| 120,000 \| 100,000 \| 3,000 \| 1,500 \| 123,000 \| \$0\.2400 \|/,
+      /\| Sol1 \(high\) \| 120,000 \| 100,000 \| 3,000 \| 1,500 \| 123,000 \| \$0\.2400 \|/,
     )
     assert.match(
       markdown,

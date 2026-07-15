@@ -1,6 +1,6 @@
 ---
 name: review-fix-address-bots
-description: Integrate the PR base, run five persistent read-only GPT-5.6 Sol, Terra, and Luna reviewers, fix/re-review findings, require pnpm precommit, address review bots, and compare model quality.
+description: Integrate the PR base, run a configurable persistent read-only reviewer cohort, fix and re-review findings, require pnpm precommit, address review bots, and compare model quality.
 ---
 
 # Review, Fix, and Address Bots
@@ -63,32 +63,32 @@ Rebase only when repository conventions require it or the user explicitly reques
 
 4. Preserve the initial ownership boundaries while integrating. Never use reset, automatic stashing, broad staging, or an unrelated checkpoint commit to make the merge proceed. Do not allow pre-existing staged changes to become part of a merge commit. If unrelated dirty work makes integration unsafe, stop and report what must be preserved.
 5. If the merge or authorized rebase conflicts, resolve the conflicts before formal review. Inspect the base version, feature version, surrounding code, branch intent, and relevant tests; do not mechanically choose one side. Run focused checks for the resolved areas. Stop for user input when correct resolution requires a material product, UX, public API, or architecture decision.
-6. Treat the integrated tree, including every conflict resolution, as the review target. Include the target SHA and a summary of resolved files in the reviewer context. Do not spend the five formal reviews on the pre-integration tree. If integration occurs after a formal review has started, invalidate that review and rerun all five reviewers against the new stable target.
+6. Treat the integrated tree, including every conflict resolution, as the review target. Include the target SHA and a summary of resolved files in the reviewer context. Do not spend the configured formal reviews on the pre-integration tree. If integration occurs after a formal review has started, invalidate that review and rerun the entire configured cohort against the new stable target.
 
-## 3. Run five independent reviews
+## 3. Run independent reviews
 
 Read [references/reviewer-sessions.md](references/reviewer-sessions.md) completely before launching reviewers.
 
-1. Create exactly five stable reviewer identities at high thinking: one `gpt-5.6-sol`, two `gpt-5.6-terra`, and two `gpt-5.6-luna`. Use `sol-1`, `terra-1`, `terra-2`, `luna-1`, and `luna-2` throughout the run.
+1. Use the reviewer count, models, and reasoning levels explicitly requested by the user. Otherwise use the default high-thinking cohort: one `gpt-5.6-sol`, two `gpt-5.6-terra`, and two `gpt-5.6-luna`, with IDs `sol-1`, `terra-1`, `terra-2`, `luna-1`, and `luna-2`. If the user requests only a count from one through five, use that many reviewers from this default order; ask for a model mix when a count above five is otherwise underspecified. Keep the resolved cohort unchanged for the run.
 2. Verify that the runtime actually applied the exact model and thinking level to every reviewer invocation. If either control is unavailable for any cohort member, stop and report the blocker. Do not substitute another model or thinking level unless the user explicitly authorizes it, and never claim settings that were not actually configured.
-3. Give all five reviewers the same raw review prompt, review target, and reviewer role boundary. Tell them to inspect the repository themselves and report every qualifying finding with file, minimal line range, severity, scenario, and concise rationale.
+3. Give every configured reviewer the same raw review prompt, review target, and reviewer role boundary. Tell them to inspect the repository themselves and report every qualifying finding with file, minimal line range, severity, scenario, and concise rationale.
 4. Do not show any reviewer another reviewer's findings or the primary agent's conclusions.
-5. Before launching, fingerprint `HEAD`, staged and unstaged diffs, status, and relevant untracked-file contents. Keep the target unchanged until all five initial reports and continuity handshakes finish. Afterward, verify the fingerprint is unchanged. If it changed unexpectedly, inspect ownership and rerun the full cohort once against the new stable target. If instability recurs, stop and report the changing review target instead of looping.
-6. Launch as many reviewers concurrently as the runtime permits and queue the remainder without changing their prompt or target. Wait for all five reports. If one invocation fails, retry that reviewer once with the same identity, model, thinking level, isolated prompt, and target. Report a persistent failure rather than substituting a different reviewer.
+5. Before launching, fingerprint `HEAD`, staged and unstaged diffs, status, and relevant untracked-file contents. Keep the target unchanged until every initial report and continuity handshake finishes. Afterward, verify the fingerprint is unchanged. If it changed unexpectedly, inspect ownership and rerun the full cohort once against the new stable target. If instability recurs, stop and report the changing review target instead of looping.
+6. Launch as many reviewers concurrently as the runtime permits and queue the remainder without changing their prompt or target. Wait for every configured report. If one invocation fails, retry that reviewer once with the same identity, model, thinking level, isolated prompt, and target. Report a persistent failure rather than substituting a different reviewer.
 7. Immediately log each completed or failed initial reviewer invocation with its reviewer ID, launch mechanism, session identifier, model and reasoning requested/applied, round, duration, and token usage when available. After deduplication, append the stable finding IDs or include them in the final summary.
 
 ### Reviewer session persistence is required
 
-Treat resumability as a prerequisite because phase 5 must continue the exact same five sessions.
+Treat resumability as a prerequisite because phase 5 must continue the exact same configured sessions.
 
 1. Capture every native session handle or CLI thread ID and its launch controls in a gitignored `.context` operational ledger before making fixes. Also record the non-secret session identifier in the observational run log.
 2. Immediately after all initial reports return—and before editing—resume each same session and ask it to reply only `SESSION_CONTINUITY_OK`, with the reviewer role boundary and identical model and thinking controls still in force.
 3. Log every successful or failed handshake as `reviewer_continuity_verified`. A logging failure remains observational, but a continuity failure blocks editing.
-4. Do not enter phase 4 until all five handshakes succeed. If any session is not resumable, discard the entire cohort's reports and restart all five once while the target remains unchanged. If resumability fails again, stop and report the blocker.
+4. Do not enter phase 4 until every handshake succeeds. If any session is not resumable, discard the entire cohort's reports and restart the entire cohort once while the target remains unchanged. If resumability fails again, stop and report the blocker.
 
 ## 4. Verify and resolve findings
 
-1. Combine and deduplicate the five reports by underlying defect, not wording. Preserve which reviewers and model families reported each finding so model-level comparisons remain possible.
+1. Combine and deduplicate the configured reports by underlying defect, not wording. Preserve which reviewers and model families reported each finding so model-level comparisons remain possible.
 2. Independently inspect every claimed issue against the current diff, surrounding code, tests, and repository conventions.
 3. Classify each finding as `valid`, `duplicate`, `already_fixed_or_stale`, `false_positive`, `out_of_scope_user_change`, or `needs_user_decision`.
 4. Fix all valid, in-scope findings. Add or update focused regression tests when practical.
@@ -97,10 +97,10 @@ Treat resumability as a prerequisite because phase 5 must continue the exact sam
 
 ## 5. Have reviewers critique the fixes
 
-Use the same five session handles recorded and continuity-checked in phase 3 so every reviewer retains the context behind its findings. Resume each with its original explicit model and high-thinking controls, keep all five read-only, and never use an ephemeral session. If the runtime cannot continue any exact session, stop and report the limitation unless the user authorizes replacement sessions; never silently substitute a new reviewer.
+Use the same configured session handles recorded and continuity-checked in phase 3 so every reviewer retains the context behind its findings. Resume each with its original explicit model and reasoning controls, keep every reviewer read-only, and never use an ephemeral session. If the runtime cannot continue any exact session, stop and report the limitation unless the user authorizes replacement sessions; never silently substitute a new reviewer.
 
 1. After the primary agent implements and locally checks the fixes, fingerprint the stable workspace again. Do not edit while reviewers inspect it.
-2. Send all five reviewers the updated diff plus a cumulative ledger containing every original finding and all prior remediation pushback: classification, primary-agent evidence and decision, change made or reason rejected, relevant tests, and repository context that affected the decision.
+2. Send every configured reviewer the updated diff plus a cumulative ledger containing every original finding and all prior remediation pushback: classification, primary-agent evidence and decision, change made or reason rejected, relevant tests, and repository context that affected the decision.
 3. Ask each reviewer to assess:
    - whether each valid finding is fully fixed at the underlying cause,
    - whether the solution introduces regressions or misses related cases,
@@ -109,7 +109,7 @@ Use the same five session handles recorded and continuity-checked in phase 3 so 
    - whether any rejected finding should be reconsidered given the evidence.
 4. Require actionable pushback to identify a concrete failure mode, affected code, or demonstrably better bounded alternative. Treat preference-only rewrites as non-actionable.
 5. Independently judge every response. Apply valid improvements, reject weak or context-missing advice with evidence, and retain final authority; reviewer approval is advisory and is not a merge gate.
-6. Run at most three remediation-review rounds. Stop early when all five reviewers find the fixes adequate or all remaining objections have evidence-backed final dispositions.
+6. Run at most three remediation-review rounds. Stop early when every configured reviewer finds the fixes adequate or all remaining objections have evidence-backed final dispositions.
 7. Increase review depth after each round of valid pushback. Explicitly include the new scope and supporting evidence in the follow-up prompt so reviewers do not merely repeat the prior pass:
    - Round 1: inspect the focused fix, regression test, and immediate call sites.
    - Round 2: inspect related module behavior, boundary conditions, and integration assumptions.
@@ -145,8 +145,8 @@ Before the final response, finish the run log with the actual reviewer sessions,
 
 Report:
 
-- whether all five initial reviewers completed and whether each requested model/reasoning combination was actually applied,
-- the launch mechanism for each reviewer, whether all five persistent handles were recorded, whether the phase-3 continuity handshakes succeeded, and whether any cohort was discarded and retried,
+- whether every configured initial reviewer completed and whether each requested model/reasoning combination was actually applied,
+- the launch mechanism for each reviewer, whether every configured persistent handle was recorded, whether the phase-3 continuity handshakes succeeded, and whether any cohort was discarded and retried,
 - the run-log path, actual reviewer session/invocation counts, rounds per reviewer, and token-usage coverage,
 - the exact generated reviewer-usage Markdown section defined in `references/run-logging.md`, with `Estimated cost` immediately after `Total`, as the final section of the response even when some values are `n/a`; copy the helper output verbatim and put nothing after it,
 - which findings were shared across reviewers and which were unique, using the deduplicated finding IDs and derived overlap,

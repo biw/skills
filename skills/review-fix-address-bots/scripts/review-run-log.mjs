@@ -562,6 +562,7 @@ const reviewerUsage = (reviewers) =>
     return {
       reviewerId: reviewer.reviewerId || `reviewer-${index + 1}`,
       model,
+      reasoning: reviewer.reasoningApplied || 'unknown',
       tokenUsage,
       estimatedCostUsd: estimateTokenCost(model, tokenUsage),
     }
@@ -587,11 +588,14 @@ const costMetrics = (usageByReviewer) => {
 
 const formatInteger = (value) => (Number.isFinite(value) ? new Intl.NumberFormat('en-US').format(value) : 'n/a')
 const formatCost = (value) => (Number.isFinite(value) ? `$${value.toFixed(4)}` : 'n/a')
-const reviewerLabel = (reviewerId) =>
-  reviewerId
-    .split('-')
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(' ')
+const reviewerLabel = (reviewerId, reasoning) => {
+  const parts = reviewerId.split('-')
+  if (parts.length > 1 && /^\d+$/.test(parts.at(-1))) {
+    parts.splice(-2, 2, `${parts.at(-2)}${parts.at(-1)}`)
+  }
+  const name = parts.map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join(' ')
+  return `${name} (${reasoning || 'unknown'})`
+}
 
 export const renderUsageTable = (derived) => {
   const reviewers = Array.isArray(derived?.reviewerUsage) ? derived.reviewerUsage : []
@@ -607,7 +611,7 @@ export const renderUsageTable = (derived) => {
         coverage[field] += 1
       }
     }
-    return `| ${reviewerLabel(reviewer.reviewerId)} | ${formatInteger(usage.inputTokens)} | ${formatInteger(usage.cachedInputTokens)} | ${formatInteger(usage.outputTokens)} | ${formatInteger(usage.reasoningOutputTokens)} | ${formatInteger(usage.totalTokens)} | ${formatCost(reviewer.estimatedCostUsd)} |`
+    return `| ${reviewerLabel(reviewer.reviewerId, reviewer.reasoning)} | ${formatInteger(usage.inputTokens)} | ${formatInteger(usage.cachedInputTokens)} | ${formatInteger(usage.outputTokens)} | ${formatInteger(usage.reasoningOutputTokens)} | ${formatInteger(usage.totalTokens)} | ${formatCost(reviewer.estimatedCostUsd)} |`
   })
 
   const totalCells = fields.map((field) =>
