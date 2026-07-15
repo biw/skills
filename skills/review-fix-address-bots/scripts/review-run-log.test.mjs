@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { appendEvent, deriveMetrics, finishRun, sanitizeRemote, startRun } from './review-run-log.mjs'
+import {
+  PRICING_SNAPSHOT,
+  appendEvent,
+  deriveMetrics,
+  estimateTokenCost,
+  finishRun,
+  sanitizeRemote,
+  startRun,
+} from './review-run-log.mjs'
 
 test('writes dated JSONL and derives reviewer overlap without inventing token usage', () => {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'review-run-log-'))
@@ -82,6 +90,9 @@ test('writes dated JSONL and derives reviewer overlap without inventing token us
     })
     assert.equal(derived.tokenUsage.complete, false)
     assert.equal(derived.tokenUsage.invocationsWithUsage, 1)
+    assert.equal(derived.estimatedCost.complete, false)
+    assert.equal(derived.estimatedCost.estimatedKnownUsd, null)
+    assert.equal(derived.estimatedCost.estimatedTotalUsd, null)
     assert.deepEqual(derived.tokenUsage.totals, {
       inputTokens: 80,
       outputTokens: 20,
@@ -193,6 +204,104 @@ test('groups five-reviewer findings by applied model for quality comparison', ()
   assert.equal(derived.modelComparison.byModel[1].initialTokenUsage.invocationCount, 2)
   assert.equal(derived.modelComparison.byModel[1].initialTokenUsage.complete, false)
   assert.equal(derived.modelComparison.byModel[1].cumulativeTokenUsage.invocationCount, 4)
+  assert.equal(derived.modelComparison.byModel[1].cumulativeEstimatedCostUsd, null)
+})
+
+test('estimates standard API-equivalent cost with cached input priced separately', () => {
+  const derived = deriveMetrics({
+    reviewers: [
+      {
+        reviewerId: 'sol-1',
+        modelApplied: 'gpt-5.6-sol',
+        continuityChecks: [
+          {
+            round: 1,
+            tokenUsage: {
+              inputTokens: 20_000,
+              cachedInputTokens: 15_000,
+              outputTokens: 1_000,
+              reasoningOutputTokens: 600,
+              totalTokens: 21_000,
+            },
+          },
+        ],
+        rounds: [
+          {
+            phase: 'initial',
+            round: 1,
+            findingIds: [],
+            tokenUsage: {
+              inputTokens: 80_000,
+              cachedInputTokens: 75_000,
+              outputTokens: 2_000,
+              reasoningOutputTokens: 1_200,
+              totalTokens: 82_000,
+            },
+          },
+        ],
+      },
+      {
+        reviewerId: 'luna-1',
+        modelApplied: 'gpt-5.6-luna',
+        rounds: [
+          {
+            phase: 'initial',
+            round: 1,
+            findingIds: [],
+            tokenUsage: {
+              inputTokens: 50_000,
+              cachedInputTokens: 40_000,
+              outputTokens: 1_000,
+              reasoningOutputTokens: 500,
+              totalTokens: 51_000,
+            },
+          },
+        ],
+      },
+    ],
+  })
+
+  assert.equal(PRICING_SNAPSHOT.ratesPerMillionTokens['gpt-5.6-sol'].cachedInput, 0.5)
+  assert.equal(derived.reviewerUsage[0].estimatedCostUsd, 0.185)
+  assert.equal(derived.reviewerUsage[1].estimatedCostUsd, 0.02)
+  assert.equal(derived.modelComparison.byModel[0].initialEstimatedCostUsd, 0.1225)
+  assert.equal(derived.modelComparison.byModel[0].cumulativeEstimatedCostUsd, 0.185)
+  assert.deepEqual(
+    {
+      reviewerCount: derived.estimatedCost.reviewerCount,
+      reviewersWithEstimate: derived.estimatedCost.reviewersWithEstimate,
+      complete: derived.estimatedCost.complete,
+      estimatedTotalUsd: derived.estimatedCost.estimatedTotalUsd,
+    },
+    { reviewerCount: 2, reviewersWithEstimate: 2, complete: true, estimatedTotalUsd: 0.205 },
+  )
+})
+
+test('does not estimate cost from incomplete or invalid token accounting', () => {
+  assert.equal(
+    estimateTokenCost('gpt-5.6-sol', {
+      invocationCount: 1,
+      fieldCoverage: { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 },
+      totals: { inputTokens: 100, outputTokens: 10 },
+    }),
+    null,
+  )
+  assert.equal(
+    estimateTokenCost('gpt-5.6-sol', {
+      invocationCount: 1,
+      fieldCoverage: { inputTokens: 1, cachedInputTokens: 1, outputTokens: 1 },
+      totals: { inputTokens: 100, cachedInputTokens: 101, outputTokens: 10 },
+    }),
+    null,
+  )
+  assert.equal(
+    estimateTokenCost('unknown', {
+      invocationCount: 1,
+      fieldCoverage: { inputTokens: 1, cachedInputTokens: 1, outputTokens: 1 },
+      totals: { inputTokens: 100, cachedInputTokens: 50, outputTokens: 10 },
+    }),
+    null,
+  )
 })
 
 test('keeps reviewer model unknown when applied routing is unavailable', () => {

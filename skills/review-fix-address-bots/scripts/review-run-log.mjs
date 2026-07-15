@@ -9,6 +9,24 @@ import { fileURLToPath } from 'node:url'
 
 export const SCHEMA_VERSION = 1
 
+export const PRICING_SNAPSHOT = Object.freeze({
+  currency: 'USD',
+  serviceTier: 'standard',
+  effectiveDate: '2026-07-09',
+  source: 'https://openai.com/index/gpt-5-6/',
+  cachedInputDiscount: 0.9,
+  ratesPerMillionTokens: Object.freeze({
+    'gpt-5.6-sol': Object.freeze({ input: 5, cachedInput: 0.5, output: 30 }),
+    'gpt-5.6-terra': Object.freeze({ input: 2.5, cachedInput: 0.25, output: 15 }),
+    'gpt-5.6-luna': Object.freeze({ input: 1, cachedInput: 0.1, output: 6 }),
+  }),
+  limitations: Object.freeze([
+    'API-equivalent estimate; Codex plan billing may differ.',
+    'Treats cachedInputTokens as cache reads and cannot identify cache-write premiums.',
+    'Excludes long-context and non-standard service-tier premiums.',
+  ]),
+})
+
 const scriptPath = fileURLToPath(import.meta.url)
 const skillRoot = dirname(dirname(scriptPath))
 
@@ -283,6 +301,60 @@ const tokenMetrics = (reviewers, phase) => {
   }
 }
 
+export const estimateTokenCost = (model, metrics) => {
+  const rates = PRICING_SNAPSHOT.ratesPerMillionTokens[model]
+  const totals = metrics?.totals
+  if (!rates || !totals || !metrics || metrics.invocationCount === 0) return null
+
+  const requiredFields = ['inputTokens', 'cachedInputTokens', 'outputTokens']
+  if (requiredFields.some((field) => metrics.fieldCoverage?.[field] !== metrics.invocationCount)) return null
+
+  const { inputTokens, cachedInputTokens, outputTokens } = totals
+  if (
+    ![inputTokens, cachedInputTokens, outputTokens].every((value) => Number.isFinite(value) && value >= 0) ||
+    cachedInputTokens > inputTokens
+  ) {
+    return null
+  }
+
+  const uncachedInputTokens = inputTokens - cachedInputTokens
+  const estimatedUsd =
+    (uncachedInputTokens * rates.input + cachedInputTokens * rates.cachedInput + outputTokens * rates.output) /
+    1_000_000
+
+  return Number(estimatedUsd.toFixed(6))
+}
+
+const reviewerUsage = (reviewers) =>
+  reviewers.map((reviewer, index) => {
+    const model = reviewer.modelApplied || 'unknown'
+    const tokenUsage = tokenMetrics([reviewer])
+    return {
+      reviewerId: reviewer.reviewerId || `reviewer-${index + 1}`,
+      model,
+      tokenUsage,
+      estimatedCostUsd: estimateTokenCost(model, tokenUsage),
+    }
+  })
+
+const costMetrics = (usageByReviewer) => {
+  const estimates = usageByReviewer.filter((reviewer) => reviewer.estimatedCostUsd !== null)
+  const complete = usageByReviewer.length > 0 && estimates.length === usageByReviewer.length
+  const estimatedKnownUsd =
+    estimates.length > 0
+      ? Number(estimates.reduce((total, reviewer) => total + reviewer.estimatedCostUsd, 0).toFixed(6))
+      : null
+  return {
+    currency: PRICING_SNAPSHOT.currency,
+    pricing: PRICING_SNAPSHOT,
+    reviewerCount: usageByReviewer.length,
+    reviewersWithEstimate: estimates.length,
+    complete,
+    estimatedKnownUsd,
+    estimatedTotalUsd: complete ? estimatedKnownUsd : null,
+  }
+}
+
 const classificationCountsFor = (findingIds, findingsById) => {
   const counts = {}
   for (const findingId of findingIds) {
@@ -341,27 +413,33 @@ const modelComparison = (reviewers, findings) => {
   }))
 
   return {
-    byModel: entries.map((entry) => ({
-      model: entry.model,
-      reviewerIds: entry.reviewerIds,
-      reviewerCount: entry.reviewers.length,
-      invocationCount: entry.reviewers.reduce(
-        (count, reviewer) => count + invocationsFor(reviewer).length,
-        0,
-      ),
-      initialFindingIds: entry.initialFindingIds,
-      initialClassificationCounts: classificationCountsFor(entry.initialFindingIds, findingsById),
-      initialValidFindingIds: entry.initialValidFindingIds,
-      initialUniqueToModelFindingIds: entry.initialFindingIds.filter(
-        (findingId) => initialFrequency.get(findingId) === 1,
-      ),
-      initialUniqueValidFindingIds: entry.initialValidFindingIds.filter(
-        (findingId) => initialFrequency.get(findingId) === 1,
-      ),
-      cumulativeFindingIds: entry.cumulativeFindingIds,
-      initialTokenUsage: tokenMetrics(entry.reviewers, 'initial'),
-      cumulativeTokenUsage: tokenMetrics(entry.reviewers),
-    })),
+    byModel: entries.map((entry) => {
+      const initialTokenUsage = tokenMetrics(entry.reviewers, 'initial')
+      const cumulativeTokenUsage = tokenMetrics(entry.reviewers)
+      return {
+        model: entry.model,
+        reviewerIds: entry.reviewerIds,
+        reviewerCount: entry.reviewers.length,
+        invocationCount: entry.reviewers.reduce(
+          (count, reviewer) => count + invocationsFor(reviewer).length,
+          0,
+        ),
+        initialFindingIds: entry.initialFindingIds,
+        initialClassificationCounts: classificationCountsFor(entry.initialFindingIds, findingsById),
+        initialValidFindingIds: entry.initialValidFindingIds,
+        initialUniqueToModelFindingIds: entry.initialFindingIds.filter(
+          (findingId) => initialFrequency.get(findingId) === 1,
+        ),
+        initialUniqueValidFindingIds: entry.initialValidFindingIds.filter(
+          (findingId) => initialFrequency.get(findingId) === 1,
+        ),
+        cumulativeFindingIds: entry.cumulativeFindingIds,
+        initialTokenUsage,
+        cumulativeTokenUsage,
+        initialEstimatedCostUsd: estimateTokenCost(entry.model, initialTokenUsage),
+        cumulativeEstimatedCostUsd: estimateTokenCost(entry.model, cumulativeTokenUsage),
+      }
+    }),
     initialOverlap: overlapFor(syntheticReviewers, 'initial'),
     cumulativeOverlap: overlapFor(syntheticReviewers),
   }
@@ -374,6 +452,7 @@ export const deriveMetrics = (summary = {}) => {
   const initialOverlap = overlapFor(reviewers, 'initial')
   const cumulativeOverlap = overlapFor(reviewers)
   const githubReviewBots = Array.isArray(summary.githubReviewBots) ? summary.githubReviewBots : []
+  const usageByReviewer = reviewerUsage(reviewers)
 
   return {
     reviewerSessionCount: reviewers.length,
@@ -403,7 +482,9 @@ export const deriveMetrics = (summary = {}) => {
     initialOverlap,
     cumulativeOverlap,
     modelComparison: modelComparison(reviewers, findings),
+    reviewerUsage: usageByReviewer,
     tokenUsage: tokenMetrics(reviewers),
+    estimatedCost: costMetrics(usageByReviewer),
     githubReviewBotCount: githubReviewBots.length,
     reviewBotLoopCount:
       typeof summary.reviewBotLoopCount === 'number' && Number.isFinite(summary.reviewBotLoopCount)

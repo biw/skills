@@ -99,6 +99,18 @@ node scripts/review-run-log.mjs finish \
   --data-file .context/review-run-summary.json
 ```
 
-The helper derives reviewer session and invocation counts, continuity-invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, and token totals with per-field coverage. Invocation and cumulative token metrics include both review rounds and continuity checks; initial token metrics remain limited to the initial review pass. The helper also groups reviewers only by applied model and derives initial finding classifications, valid and model-unique valid finding IDs, and cross-model overlap. Record a GitHub bot's model/version only when GitHub exposes it; otherwise use `null`. Preserve the raw reviewer/round/continuity/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.
+The helper derives reviewer session and invocation counts, continuity-invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, and token totals with per-field coverage. Invocation and cumulative token metrics include both review rounds and continuity checks; initial token metrics remain limited to the initial review pass. The helper also groups reviewers only by applied model and derives initial finding classifications, valid and model-unique valid finding IDs, cross-model overlap, per-reviewer usage, and estimated costs.
+
+Cost is an API-equivalent estimate based on the embedded, dated standard-service GPT-5.6 pricing snapshot. The helper prices `cachedInputTokens` as cache reads, prices the remaining input as uncached, and prices all output tokens at the output rate; reasoning tokens are already included in output and are not added again. It returns `null` rather than estimating when the applied model or any required token field is missing. The estimate is not an invoice: Codex plan billing may differ, cache-write premiums cannot be identified from the aggregate counters, and long-context or non-standard service-tier premiums are excluded. Cite the pricing date and source in the final report.
+
+When usage is available, render this exact Markdown column order in the final report, with `Estimated cost` immediately after `Total`:
+
+```markdown
+| Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost |
+|---|---:|---:|---:|---:|---:|---:|
+| Sol 1 | 100,000 | 90,000 | 2,000 | 1,200 | 102,000 | $0.1550 |
+```
+
+Use `n/a` for an unavailable estimate. Preserve the raw reviewer/round/continuity/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.
 
 If logging fails, do not hide the failure or fabricate a record. Report it, but do not let telemetry failure cause unsafe Git, PR, or code mutations.
