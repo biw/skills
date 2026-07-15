@@ -61,6 +61,13 @@ Always attempt `finish`, including for blocked or failed runs. Pass a summary wi
       "reasoningRequested": "high",
       "reasoningApplied": "high",
       "continuityVerified": true,
+      "continuityChecks": [
+        {
+          "round": 1,
+          "verified": true,
+          "tokenUsage": null
+        }
+      ],
       "rounds": [
         {
           "phase": "initial",
@@ -84,7 +91,7 @@ Always attempt `finish`, including for blocked or failed runs. Pass a summary wi
 }
 ```
 
-Include one reviewer object for each of `sol-1`, `terra-1`, `terra-2`, `luna-1`, and `luna-2`, even when a reviewer found no issues. Preserve applied model fields so comparisons reflect what actually ran rather than what was merely requested.
+Include one reviewer object for each of `sol-1`, `terra-1`, `terra-2`, `luna-1`, and `luna-2`, even when a reviewer found no issues. Preserve applied model fields so comparisons reflect what actually ran rather than what was merely requested; leave an unavailable `modelApplied` unset so the helper groups it as `unknown`. Record every continuity attempt in `continuityChecks`, including retries and `tokenUsage: null` when the runtime exposes no accounting.
 
 ```bash
 node scripts/review-run-log.mjs finish \
@@ -92,6 +99,6 @@ node scripts/review-run-log.mjs finish \
   --data-file .context/review-run-summary.json
 ```
 
-The helper derives reviewer session and invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, and token totals with per-field coverage. It also groups reviewers by applied model and derives initial finding classifications, valid and model-unique valid finding IDs, cross-model overlap, and initial/cumulative token coverage. Record a GitHub bot's model/version only when GitHub exposes it; otherwise use `null`. Preserve the raw reviewer/round/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.
+The helper derives reviewer session and invocation counts, continuity-invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, and token totals with per-field coverage. Invocation and cumulative token metrics include both review rounds and continuity checks; initial token metrics remain limited to the initial review pass. The helper also groups reviewers only by applied model and derives initial finding classifications, valid and model-unique valid finding IDs, and cross-model overlap. Record a GitHub bot's model/version only when GitHub exposes it; otherwise use `null`. Preserve the raw reviewer/round/continuity/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.
 
 If logging fails, do not hide the failure or fabricate a record. Report it, but do not let telemetry failure cause unsafe Git, PR, or code mutations.

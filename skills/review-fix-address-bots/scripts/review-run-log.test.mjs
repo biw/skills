@@ -125,30 +125,35 @@ test('groups five-reviewer findings by applied model for quality comparison', ()
         reviewerId: 'sol-1',
         modelRequested: 'gpt-5.6-sol',
         modelApplied: 'gpt-5.6-sol',
+        continuityChecks: [{ round: 1, verified: true, tokenUsage: { totalTokens: 10 } }],
         rounds: [{ phase: 'initial', round: 1, findingIds: ['F1', 'F2'], tokenUsage: { totalTokens: 100 } }],
       },
       {
         reviewerId: 'terra-1',
         modelRequested: 'gpt-5.6-terra',
         modelApplied: 'gpt-5.6-terra',
+        continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
         rounds: [{ phase: 'initial', round: 1, findingIds: ['F1', 'F3'], tokenUsage: { totalTokens: 80 } }],
       },
       {
         reviewerId: 'terra-2',
         modelRequested: 'gpt-5.6-terra',
         modelApplied: 'gpt-5.6-terra',
+        continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
         rounds: [{ phase: 'initial', round: 1, findingIds: ['F3', 'F4'], tokenUsage: null }],
       },
       {
         reviewerId: 'luna-1',
         modelRequested: 'gpt-5.6-luna',
         modelApplied: 'gpt-5.6-luna',
+        continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
         rounds: [{ phase: 'initial', round: 1, findingIds: ['F1', 'F5'], tokenUsage: { totalTokens: 40 } }],
       },
       {
         reviewerId: 'luna-2',
         modelRequested: 'gpt-5.6-luna',
         modelApplied: 'gpt-5.6-luna',
+        continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
         rounds: [{ phase: 'initial', round: 1, findingIds: ['F5', 'F6'], tokenUsage: null }],
       },
     ],
@@ -163,6 +168,11 @@ test('groups five-reviewer findings by applied model for quality comparison', ()
   })
 
   assert.equal(derived.reviewerSessionCount, 5)
+  assert.equal(derived.reviewerInvocationCount, 10)
+  assert.equal(derived.continuityInvocationCount, 5)
+  assert.equal(derived.tokenUsage.invocationCount, 10)
+  assert.equal(derived.tokenUsage.invocationsWithUsage, 4)
+  assert.deepEqual(derived.tokenUsage.totals, { totalTokens: 230 })
   assert.deepEqual(
     derived.modelComparison.byModel.map(({ model, reviewerCount }) => ({ model, reviewerCount })),
     [
@@ -179,8 +189,26 @@ test('groups five-reviewer findings by applied model for quality comparison', ()
   assert.deepEqual(derived.modelComparison.byModel[1].initialUniqueValidFindingIds, ['F3'])
   assert.deepEqual(derived.modelComparison.byModel[2].initialUniqueValidFindingIds, ['F5'])
   assert.deepEqual(derived.modelComparison.initialOverlap.allReviewersSharedFindingIds, ['F1'])
+  assert.equal(derived.modelComparison.byModel[1].invocationCount, 4)
   assert.equal(derived.modelComparison.byModel[1].initialTokenUsage.invocationCount, 2)
   assert.equal(derived.modelComparison.byModel[1].initialTokenUsage.complete, false)
+  assert.equal(derived.modelComparison.byModel[1].cumulativeTokenUsage.invocationCount, 4)
+})
+
+test('keeps reviewer model unknown when applied routing is unavailable', () => {
+  const derived = deriveMetrics({
+    reviewers: [
+      {
+        reviewerId: 'unverified-reviewer',
+        modelRequested: 'gpt-5.6-sol',
+        rounds: [{ phase: 'initial', round: 1, findingIds: ['F1'], tokenUsage: null }],
+      },
+    ],
+    findings: [{ findingId: 'F1', classification: 'valid' }],
+  })
+
+  assert.equal(derived.modelComparison.byModel[0].model, 'unknown')
+  assert.deepEqual(derived.modelComparison.byModel[0].reviewerIds, ['unverified-reviewer'])
 })
 
 test('assigns fallback reviewer IDs before filtering reviewers with findings', () => {

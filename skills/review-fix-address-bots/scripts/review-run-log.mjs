@@ -238,6 +238,14 @@ const overlapFor = (reviewers, phase) => {
   }
 }
 
+const invocationsFor = (reviewer) => {
+  const rounds = Array.isArray(reviewer.rounds) ? reviewer.rounds : []
+  const continuityChecks = Array.isArray(reviewer.continuityChecks)
+    ? reviewer.continuityChecks.map((check) => ({ ...check, phase: 'continuity' }))
+    : []
+  return [...rounds, ...continuityChecks]
+}
+
 const tokenMetrics = (reviewers, phase) => {
   const fields = ['inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens']
   const totals = Object.fromEntries(fields.map((field) => [field, 0]))
@@ -246,7 +254,7 @@ const tokenMetrics = (reviewers, phase) => {
   let invocationsWithUsage = 0
 
   for (const reviewer of reviewers) {
-    for (const round of Array.isArray(reviewer.rounds) ? reviewer.rounds : []) {
+    for (const round of invocationsFor(reviewer)) {
       if (phase && round.phase !== phase) continue
       invocationCount += 1
       const usage = round.tokenUsage
@@ -287,7 +295,7 @@ const classificationCountsFor = (findingIds, findingsById) => {
 const modelComparison = (reviewers, findings) => {
   const groups = new Map()
   reviewers.forEach((reviewer, index) => {
-    const model = reviewer.modelApplied || reviewer.modelRequested || 'unknown'
+    const model = reviewer.modelApplied || 'unknown'
     const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`
     if (!groups.has(model)) groups.set(model, { model, reviewerIds: [], reviewers: [] })
     const group = groups.get(model)
@@ -338,7 +346,7 @@ const modelComparison = (reviewers, findings) => {
       reviewerIds: entry.reviewerIds,
       reviewerCount: entry.reviewers.length,
       invocationCount: entry.reviewers.reduce(
-        (count, reviewer) => count + (Array.isArray(reviewer.rounds) ? reviewer.rounds.length : 0),
+        (count, reviewer) => count + invocationsFor(reviewer).length,
         0,
       ),
       initialFindingIds: entry.initialFindingIds,
@@ -370,12 +378,18 @@ export const deriveMetrics = (summary = {}) => {
   return {
     reviewerSessionCount: reviewers.length,
     reviewerInvocationCount: reviewers.reduce(
-      (count, reviewer) => count + (Array.isArray(reviewer.rounds) ? reviewer.rounds.length : 0),
+      (count, reviewer) => count + invocationsFor(reviewer).length,
+      0,
+    ),
+    continuityInvocationCount: reviewers.reduce(
+      (count, reviewer) => count + (Array.isArray(reviewer.continuityChecks) ? reviewer.continuityChecks.length : 0),
       0,
     ),
     roundsByReviewer: reviewers.map((reviewer, index) => ({
       reviewerId: reviewer.reviewerId || `reviewer-${index + 1}`,
       roundCount: Array.isArray(reviewer.rounds) ? reviewer.rounds.length : 0,
+      continuityInvocationCount: Array.isArray(reviewer.continuityChecks) ? reviewer.continuityChecks.length : 0,
+      invocationCount: invocationsFor(reviewer).length,
     })),
     reviewersWhoFoundIssues: reviewers
       .map((reviewer, index) => ({
