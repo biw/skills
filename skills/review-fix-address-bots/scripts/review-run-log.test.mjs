@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -7,9 +7,11 @@ import test from 'node:test'
 import {
   PRICING_SNAPSHOT,
   appendEvent,
+  collectCodexSessionUsage,
   deriveMetrics,
   estimateTokenCost,
   finishRun,
+  renderUsageTable,
   sanitizeRemote,
   startRun,
 } from './review-run-log.mjs'
@@ -302,6 +304,110 @@ test('does not estimate cost from incomplete or invalid token accounting', () =>
     }),
     null,
   )
+})
+
+test('collects an unambiguous Codex reviewer session and renders deterministic Markdown', () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'review-session-usage-'))
+  try {
+    const sessionsRoot = join(temporaryRoot, 'sessions')
+    const sessionDirectory = join(sessionsRoot, '2026', '07', '15')
+    mkdirSync(sessionDirectory, { recursive: true })
+    const records = [
+      {
+        timestamp: '2026-07-15T19:01:00Z',
+        type: 'session_meta',
+        payload: {
+          id: 'sol-session',
+          timestamp: '2026-07-15T19:01:00Z',
+          cwd: temporaryRoot,
+          source: {
+            subagent: {
+              thread_spawn: { parent_thread_id: 'parent-thread', agent_path: '/root/sol_1' },
+            },
+          },
+        },
+      },
+      { type: 'event_msg', payload: { type: 'task_started' } },
+      {
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            total_token_usage: {
+              input_tokens: 100_000,
+              cached_input_tokens: 85_000,
+              output_tokens: 2_000,
+              reasoning_output_tokens: 1_200,
+              total_tokens: 102_000,
+            },
+          },
+        },
+      },
+      { type: 'event_msg', payload: { type: 'task_complete' } },
+      { type: 'event_msg', payload: { type: 'task_started' } },
+      {
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            total_token_usage: {
+              input_tokens: 120_000,
+              cached_input_tokens: 100_000,
+              output_tokens: 3_000,
+              reasoning_output_tokens: 1_500,
+              total_tokens: 123_000,
+            },
+          },
+        },
+      },
+      { type: 'event_msg', payload: { type: 'task_complete' } },
+    ]
+    writeFileSync(
+      join(sessionDirectory, 'rollout-sol.jsonl'),
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    )
+
+    const result = collectCodexSessionUsage(
+      {
+        reviewers: [
+          {
+            reviewerId: 'sol-1',
+            modelApplied: 'gpt-5.6-sol',
+            continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
+            rounds: [{ phase: 'initial', round: 1, findingIds: [], tokenUsage: null }],
+          },
+        ],
+      },
+      {
+        sessionsRoot,
+        startedAt: '2026-07-15T19:00:00Z',
+        endedAt: '2026-07-15T19:02:00Z',
+        repoRoot: temporaryRoot,
+      },
+    )
+
+    assert.equal(result.collection.status, 'complete')
+    assert.equal(result.collection.collectedCount, 1)
+    assert.deepEqual(result.summary.reviewers[0].sessionTokenUsage, {
+      inputTokens: 120_000,
+      cachedInputTokens: 100_000,
+      outputTokens: 3_000,
+      reasoningOutputTokens: 1_500,
+      totalTokens: 123_000,
+    })
+
+    const markdown = renderUsageTable(deriveMetrics(result.summary))
+    assert.match(
+      markdown,
+      /\| Sol 1 \| 120,000 \| 100,000 \| 3,000 \| 1,500 \| 123,000 \| \$0\.2400 \|/,
+    )
+    assert.match(
+      markdown,
+      /\| \*\*Total\*\* \| \*\*120,000\*\* \| \*\*100,000\*\* \| \*\*3,000\*\* \| \*\*1,500\*\* \| \*\*123,000\*\* \| \*\*\$0\.2400\*\* \|/,
+    )
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true })
+  }
 })
 
 test('keeps reviewer model unknown when applied routing is unavailable', () => {

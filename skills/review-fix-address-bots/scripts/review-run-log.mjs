@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -133,6 +143,210 @@ const runIdentity = (logPath) => {
   const first = events[0]
   if (first.event !== 'run_started' || !first.runId) fail(`Missing run_started header: ${logPath}`)
   return { events, runId: first.runId }
+}
+
+const tokenUsageFromCodex = (usage) =>
+  usage
+    ? {
+        inputTokens: usage.input_tokens,
+        cachedInputTokens: usage.cached_input_tokens,
+        outputTokens: usage.output_tokens,
+        reasoningOutputTokens: usage.reasoning_output_tokens,
+        totalTokens: usage.total_tokens,
+      }
+    : null
+
+const readFirstJsonLine = (path) => {
+  const descriptor = openSync(path, 'r')
+  try {
+    const buffer = Buffer.alloc(2 * 1024 * 1024)
+    const length = readSync(descriptor, buffer, 0, buffer.length, 0)
+    const text = buffer.subarray(0, length).toString('utf8')
+    const newline = text.indexOf('\n')
+    if (newline === -1) return null
+    return JSON.parse(text.slice(0, newline))
+  } catch {
+    return null
+  } finally {
+    closeSync(descriptor)
+  }
+}
+
+const sessionFilesForWindow = (sessionsRoot, startedAt, endedAt) => {
+  const files = []
+  const start = new Date(startedAt)
+  const end = new Date(endedAt)
+  start.setUTCDate(start.getUTCDate() - 1)
+  end.setUTCDate(end.getUTCDate() + 1)
+
+  for (let date = start; date <= end; date = new Date(date.getTime() + 86_400_000)) {
+    const directory = join(
+      sessionsRoot,
+      String(date.getUTCFullYear()).padStart(4, '0'),
+      String(date.getUTCMonth() + 1).padStart(2, '0'),
+      String(date.getUTCDate()).padStart(2, '0'),
+    )
+    if (!existsSync(directory)) continue
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(join(directory, entry.name))
+    }
+  }
+  return files
+}
+
+const codexSessionUsage = (path) => {
+  let totalTokenUsage = null
+  let invocationCount = 0
+  let completedInvocationCount = 0
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    if (!line) continue
+    let record
+    try {
+      record = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (record.type !== 'event_msg') continue
+    if (record.payload?.type === 'task_started') invocationCount += 1
+    if (record.payload?.type === 'task_complete') completedInvocationCount += 1
+    if (record.payload?.type === 'token_count' && record.payload.info?.total_token_usage) {
+      totalTokenUsage = record.payload.info.total_token_usage
+    }
+  }
+  return {
+    invocationCount,
+    completedInvocationCount,
+    tokenUsage: tokenUsageFromCodex(totalTokenUsage),
+  }
+}
+
+const expectedAgentName = (reviewerId) => reviewerId.replaceAll('-', '_')
+
+export const collectCodexSessionUsage = (
+  summary,
+  {
+    sessionsRoot = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions'),
+    startedAt,
+    endedAt = new Date().toISOString(),
+    repoRoot,
+  } = {},
+) => {
+  assertObject(summary, 'summary')
+  const reviewers = Array.isArray(summary.reviewers) ? summary.reviewers : []
+  if (!startedAt || !repoRoot || reviewers.length === 0) {
+    return {
+      summary,
+      collection: { status: 'unavailable', reason: 'startedAt, repoRoot, and reviewers are required' },
+    }
+  }
+
+  const startTime = new Date(startedAt).getTime()
+  const endTime = new Date(endedAt).getTime()
+  const reviewerNames = new Set(reviewers.map((reviewer, index) => expectedAgentName(reviewer.reviewerId || `reviewer-${index + 1}`)))
+  const candidates = sessionFilesForWindow(resolve(expandHome(sessionsRoot)), startedAt, endedAt)
+    .map((path) => ({ path, record: readFirstJsonLine(path) }))
+    .filter(({ record }) => record?.type === 'session_meta' && record.payload?.source?.subagent?.thread_spawn)
+    .map(({ path, record }) => {
+      const payload = record.payload
+      const spawn = payload.source.subagent.thread_spawn
+      return {
+        path,
+        sessionId: payload.id || null,
+        parentThreadId: spawn.parent_thread_id || payload.parent_thread_id || null,
+        agentPath: spawn.agent_path || payload.agent_path || '',
+        agentName: basename(spawn.agent_path || payload.agent_path || ''),
+        cwd: payload.cwd,
+        timestamp: payload.timestamp || record.timestamp,
+      }
+    })
+    .filter((candidate) => {
+      const timestamp = new Date(candidate.timestamp).getTime()
+      return (
+        reviewerNames.has(candidate.agentName) &&
+        resolve(candidate.cwd || '/') === resolve(repoRoot) &&
+        timestamp >= startTime &&
+        timestamp <= endTime
+      )
+    })
+
+  const groups = new Map()
+  for (const candidate of candidates) {
+    if (!groups.has(candidate.parentThreadId)) groups.set(candidate.parentThreadId, [])
+    groups.get(candidate.parentThreadId).push(candidate)
+  }
+
+  const matchingGroups = [...groups.entries()].filter(([, group]) =>
+    reviewers.every((reviewer, index) => {
+      const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`
+      const exactSessionId = reviewer.sessionId || reviewer.sessionIdentifier
+      const matches = group.filter(
+        (candidate) =>
+          candidate.agentName === expectedAgentName(reviewerId) &&
+          (!exactSessionId || candidate.sessionId === exactSessionId || candidate.agentPath === exactSessionId),
+      )
+      return matches.length === 1
+    }),
+  )
+
+  if (matchingGroups.length !== 1) {
+    return {
+      summary,
+      collection: {
+        status: 'unavailable',
+        reason:
+          matchingGroups.length === 0
+            ? 'no unambiguous reviewer session cohort matched the run'
+            : 'multiple reviewer session cohorts matched the run',
+        candidateGroupCount: matchingGroups.length,
+      },
+    }
+  }
+
+  const [parentThreadId, group] = matchingGroups[0]
+  const collected = []
+  const enrichedReviewers = reviewers.map((reviewer, index) => {
+    const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`
+    const exactSessionId = reviewer.sessionId || reviewer.sessionIdentifier
+    const candidate = group.find(
+      (entry) =>
+        entry.agentName === expectedAgentName(reviewerId) &&
+        (!exactSessionId || entry.sessionId === exactSessionId || entry.agentPath === exactSessionId),
+    )
+    const usage = codexSessionUsage(candidate.path)
+    const expectedInvocationCount = invocationsFor(reviewer).length
+    const valid =
+      usage.tokenUsage &&
+      usage.invocationCount === expectedInvocationCount &&
+      usage.completedInvocationCount === expectedInvocationCount
+    collected.push({
+      reviewerId,
+      sessionId: candidate.sessionId,
+      expectedInvocationCount,
+      observedInvocationCount: usage.invocationCount,
+      completedInvocationCount: usage.completedInvocationCount,
+      collected: Boolean(valid),
+    })
+    return valid
+      ? {
+          ...reviewer,
+          sessionId: candidate.sessionId,
+          sessionTokenUsage: usage.tokenUsage,
+          sessionTokenUsageSource: 'codex_rollout_token_count',
+        }
+      : reviewer
+  })
+
+  const collectedCount = collected.filter((reviewer) => reviewer.collected).length
+  return {
+    summary: { ...summary, reviewers: enrichedReviewers },
+    collection: {
+      status: collectedCount === reviewers.length ? 'complete' : 'partial',
+      parentThreadId,
+      reviewerCount: reviewers.length,
+      collectedCount,
+      reviewers: collected,
+    },
+  }
 }
 
 export const startRun = ({
@@ -301,6 +515,20 @@ const tokenMetrics = (reviewers, phase) => {
   }
 }
 
+const metricsForSessionUsage = (usage) => {
+  const fields = ['inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens']
+  const fieldCoverage = Object.fromEntries(fields.map((field) => [field, typeof usage?.[field] === 'number' ? 1 : 0]))
+  const totals = Object.fromEntries(fields.filter((field) => fieldCoverage[field]).map((field) => [field, usage[field]]))
+  return {
+    invocationCount: 1,
+    invocationsWithUsage: Object.keys(totals).length > 0 ? 1 : 0,
+    complete: fields.every((field) => fieldCoverage[field] === 1),
+    fieldCoverage,
+    totals: Object.keys(totals).length > 0 ? totals : null,
+    source: 'session',
+  }
+}
+
 export const estimateTokenCost = (model, metrics) => {
   const rates = PRICING_SNAPSHOT.ratesPerMillionTokens[model]
   const totals = metrics?.totals
@@ -328,7 +556,9 @@ export const estimateTokenCost = (model, metrics) => {
 const reviewerUsage = (reviewers) =>
   reviewers.map((reviewer, index) => {
     const model = reviewer.modelApplied || 'unknown'
-    const tokenUsage = tokenMetrics([reviewer])
+    const tokenUsage = reviewer.sessionTokenUsage
+      ? metricsForSessionUsage(reviewer.sessionTokenUsage)
+      : tokenMetrics([reviewer])
     return {
       reviewerId: reviewer.reviewerId || `reviewer-${index + 1}`,
       model,
@@ -353,6 +583,48 @@ const costMetrics = (usageByReviewer) => {
     estimatedKnownUsd,
     estimatedTotalUsd: complete ? estimatedKnownUsd : null,
   }
+}
+
+const formatInteger = (value) => (Number.isFinite(value) ? new Intl.NumberFormat('en-US').format(value) : 'n/a')
+const formatCost = (value) => (Number.isFinite(value) ? `$${value.toFixed(4)}` : 'n/a')
+const reviewerLabel = (reviewerId) =>
+  reviewerId
+    .split('-')
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ')
+
+export const renderUsageTable = (derived) => {
+  const reviewers = Array.isArray(derived?.reviewerUsage) ? derived.reviewerUsage : []
+  const fields = ['inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens']
+  const totals = Object.fromEntries(fields.map((field) => [field, 0]))
+  const coverage = Object.fromEntries(fields.map((field) => [field, 0]))
+
+  const rows = reviewers.map((reviewer) => {
+    const usage = reviewer.tokenUsage?.totals || {}
+    for (const field of fields) {
+      if (Number.isFinite(usage[field])) {
+        totals[field] += usage[field]
+        coverage[field] += 1
+      }
+    }
+    return `| ${reviewerLabel(reviewer.reviewerId)} | ${formatInteger(usage.inputTokens)} | ${formatInteger(usage.cachedInputTokens)} | ${formatInteger(usage.outputTokens)} | ${formatInteger(usage.reasoningOutputTokens)} | ${formatInteger(usage.totalTokens)} | ${formatCost(reviewer.estimatedCostUsd)} |`
+  })
+
+  const totalCells = fields.map((field) =>
+    formatInteger(reviewers.length > 0 && coverage[field] === reviewers.length ? totals[field] : null),
+  )
+  const pricing = derived?.estimatedCost?.pricing || PRICING_SNAPSHOT
+  const limitations = Array.isArray(pricing.limitations) ? pricing.limitations.join(' ') : ''
+  return [
+    '### Reviewer token usage',
+    '',
+    '| Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+    ...rows,
+    `| **Total** | **${totalCells[0]}** | **${totalCells[1]}** | **${totalCells[2]}** | **${totalCells[3]}** | **${totalCells[4]}** | **${formatCost(derived?.estimatedCost?.estimatedTotalUsd)}** |`,
+    '',
+    `Pricing: ${pricing.serviceTier} API-equivalent rates effective ${pricing.effectiveDate} ([source](${pricing.source})). ${limitations}`,
+  ].join('\n')
 }
 
 const classificationCountsFor = (findingIds, findingsById) => {
@@ -493,18 +765,31 @@ export const deriveMetrics = (summary = {}) => {
   }
 }
 
-export const finishRun = ({ logPath, summary = {}, timestamp } = {}) => {
+export const finishRun = ({ logPath, summary = {}, timestamp, collectCodexUsage = false, sessionsRoot } = {}) => {
   if (!logPath) fail('logPath is required')
   assertObject(summary, 'summary')
   const { events, runId } = runIdentity(logPath)
   if (events.some((item) => item.event === 'run_finished')) fail(`Run is already finished: ${logPath}`)
-  const derived = deriveMetrics(summary)
+  let finalSummary = summary
+  let tokenUsageCollection = null
+  if (collectCodexUsage) {
+    const first = events[0]
+    const result = collectCodexSessionUsage(summary, {
+      sessionsRoot,
+      startedAt: first.timestamp,
+      endedAt: timestamp || new Date().toISOString(),
+      repoRoot: first.repo?.root,
+    })
+    finalSummary = result.summary
+    tokenUsageCollection = result.collection
+  }
+  const derived = deriveMetrics(finalSummary)
   const record = {
     schemaVersion: SCHEMA_VERSION,
     runId,
     timestamp: isoTimestamp(timestamp),
     event: 'run_finished',
-    data: { ...summary, derived },
+    data: { ...finalSummary, ...(tokenUsageCollection ? { tokenUsageCollection } : {}), derived },
   }
   appendFileSync(logPath, `${JSON.stringify(record)}\n`, 'utf8')
   return record
@@ -546,7 +831,8 @@ const readDataOption = (options, label) => {
 const help = `Usage:
   review-run-log.mjs start [--repo-root <path>] [--output-root <path>] [--data-json <object>]
   review-run-log.mjs append --log <path> --event <lower_snake_case> [--data-json <object>]
-  review-run-log.mjs finish --log <path> [--data-json <summary>]
+  review-run-log.mjs finish --log <path> [--collect-codex-usage] [--sessions-root <path>] [--data-json <summary>]
+  review-run-log.mjs report --log <path>
 
 Use --data-file <path> instead of --data-json, or --data-file - to read JSON from stdin.
 Each command prints JSON. start prints logPath and runId; finish prints the derived metrics.`
@@ -580,8 +866,17 @@ const main = () => {
     const result = finishRun({
       logPath: options.log,
       summary: readDataOption(options, 'summary'),
+      collectCodexUsage: Boolean(options['collect-codex-usage']),
+      sessionsRoot: options['sessions-root'],
     })
     process.stdout.write(`${JSON.stringify({ logPath: resolve(options.log), derived: result.data.derived })}\n`)
+    return
+  }
+  if (command === 'report') {
+    const events = readEvents(options.log)
+    const finished = [...events].reverse().find((event) => event.event === 'run_finished')
+    if (!finished) fail(`Run is not finished: ${options.log}`)
+    process.stdout.write(`${renderUsageTable(finished.data?.derived)}\n`)
     return
   }
   fail(`Unknown command: ${command}`)

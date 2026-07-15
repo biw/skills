@@ -139,7 +139,7 @@ Use the same five session handles recorded and continuity-checked in phase 3 so 
 
 ## Finalize the run log
 
-Before the final response, finish the run log with the actual reviewer sessions, every invocation and round, launch mechanisms, continuity outcomes, requested/applied model and reasoning controls, the deduplicated finding ledger and reporting reviewers, GitHub review bots observed, bot-loop count, classifications and outcomes, validation results, pushed SHAs, status, and token usage when available. Use the helper's derived reviewer- and model-level comparisons rather than judging quality or redundancy from wording alone. When the runtime persists token counters outside the direct invocation response, treat those counters as exposed usage and collect them before finishing the log. Treat one run as an observation, not a conclusive model ranking.
+Before the final response, finish the run log with the actual reviewer sessions, every invocation and round, launch mechanisms, continuity outcomes, requested/applied model and reasoning controls, the deduplicated finding ledger and reporting reviewers, GitHub review bots observed, bot-loop count, classifications and outcomes, validation results, pushed SHAs, status, and token usage when available. For native Codex reviewers, pass `--collect-codex-usage` to the finish command so the helper discovers and validates persisted session counters deterministically. Use the helper's derived reviewer- and model-level comparisons rather than judging quality or redundancy from wording alone. Treat one run as an observation, not a conclusive model ranking.
 
 ## Final report
 
@@ -148,7 +148,7 @@ Report:
 - whether all five initial reviewers completed and whether each requested model/reasoning combination was actually applied,
 - the launch mechanism for each reviewer, whether all five persistent handles were recorded, whether the phase-3 continuity handshakes succeeded, and whether any cohort was discarded and retried,
 - the run-log path, actual reviewer session/invocation counts, rounds per reviewer, and token-usage coverage,
-- when token usage is available, the exact reviewer Markdown table defined in `references/run-logging.md`, with `Estimated cost` immediately after `Total`, plus the pricing snapshot date, source, and limitations,
+- the exact generated reviewer-usage Markdown section defined in `references/run-logging.md`, with `Estimated cost` immediately after `Total`, as the final section of the response even when some values are `n/a`; copy the helper output verbatim and put nothing after it,
 - which findings were shared across reviewers and which were unique, using the deduplicated finding IDs and derived overlap,
 - the observed per-model comparison, including classified and valid initial findings, model-unique valid findings, cross-model overlap, and token usage when available,
 - the fetched target branch and SHA, integration method, and any conflict resolutions,

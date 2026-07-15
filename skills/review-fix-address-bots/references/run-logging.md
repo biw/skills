@@ -96,14 +96,24 @@ Include one reviewer object for each of `sol-1`, `terra-1`, `terra-2`, `luna-1`,
 ```bash
 node scripts/review-run-log.mjs finish \
   --log "$REVIEW_RUN_LOG" \
+  --collect-codex-usage \
   --data-file .context/review-run-summary.json
 ```
+
+For native Codex reviewers, `--collect-codex-usage` deterministically discovers the cohort under `${CODEX_HOME:-~/.codex}/sessions`, matches the run window, repository root, parent thread, and reviewer IDs, verifies that each session's completed task count equals its recorded review-plus-continuity invocation count, and copies the final cumulative `token_count` values into the finished log. It refuses ambiguous cohorts or mismatched invocation counts instead of guessing. Record exact session IDs in the summary whenever the runtime exposes them; they further constrain discovery.
 
 The helper derives reviewer session and invocation counts, continuity-invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, and token totals with per-field coverage. Invocation and cumulative token metrics include both review rounds and continuity checks; initial token metrics remain limited to the initial review pass. The helper also groups reviewers only by applied model and derives initial finding classifications, valid and model-unique valid finding IDs, cross-model overlap, per-reviewer usage, and estimated costs.
 
 Cost is an API-equivalent estimate based on the embedded, dated standard-service GPT-5.6 pricing snapshot. The helper prices `cachedInputTokens` as cache reads, prices the remaining input as uncached, and prices all output tokens at the output rate; reasoning tokens are already included in output and are not added again. It returns `null` rather than estimating when the applied model or any required token field is missing. The estimate is not an invoice: Codex plan billing may differ, cache-write premiums cannot be identified from the aggregate counters, and long-context or non-standard service-tier premiums are excluded. Cite the pricing date and source in the final report.
 
-When usage is available, render this exact Markdown column order in the final report, with `Estimated cost` immediately after `Total`:
+After `finish`, generate the final usage section deterministically:
+
+```bash
+node scripts/review-run-log.mjs report --log "$REVIEW_RUN_LOG" \
+  > .context/reviewer-usage-report.md
+```
+
+Append `.context/reviewer-usage-report.md` verbatim as the final section of the user-facing workflow summary. Do not manually recompute, reorder, or reformat its values. The command renders this exact Markdown column order, with `Estimated cost` immediately after `Total`:
 
 ```markdown
 | Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost |
@@ -111,6 +121,6 @@ When usage is available, render this exact Markdown column order in the final re
 | Sol 1 | 100,000 | 90,000 | 2,000 | 1,200 | 102,000 | $0.1550 |
 ```
 
-Use `n/a` for an unavailable estimate. Preserve the raw reviewer/round/continuity/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.
+The generated table uses `n/a` for unavailable usage or estimates. If collection is unavailable, report the helper's reason before the final generated section, but do not have the parent model parse rollout files or invent replacement values. Preserve the raw reviewer/round/continuity/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.
 
 If logging fails, do not hide the failure or fabricate a record. Report it, but do not let telemetry failure cause unsafe Git, PR, or code mutations.
