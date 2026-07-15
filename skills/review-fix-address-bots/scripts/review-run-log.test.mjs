@@ -118,6 +118,71 @@ test('sanitizes remote credentials and transport details', () => {
   assert.equal(sanitizeRemote(undefined, 'local-repo'), 'local-repo')
 })
 
+test('groups five-reviewer findings by applied model for quality comparison', () => {
+  const derived = deriveMetrics({
+    reviewers: [
+      {
+        reviewerId: 'sol-1',
+        modelRequested: 'gpt-5.6-sol',
+        modelApplied: 'gpt-5.6-sol',
+        rounds: [{ phase: 'initial', round: 1, findingIds: ['F1', 'F2'], tokenUsage: { totalTokens: 100 } }],
+      },
+      {
+        reviewerId: 'terra-1',
+        modelRequested: 'gpt-5.6-terra',
+        modelApplied: 'gpt-5.6-terra',
+        rounds: [{ phase: 'initial', round: 1, findingIds: ['F1', 'F3'], tokenUsage: { totalTokens: 80 } }],
+      },
+      {
+        reviewerId: 'terra-2',
+        modelRequested: 'gpt-5.6-terra',
+        modelApplied: 'gpt-5.6-terra',
+        rounds: [{ phase: 'initial', round: 1, findingIds: ['F3', 'F4'], tokenUsage: null }],
+      },
+      {
+        reviewerId: 'luna-1',
+        modelRequested: 'gpt-5.6-luna',
+        modelApplied: 'gpt-5.6-luna',
+        rounds: [{ phase: 'initial', round: 1, findingIds: ['F1', 'F5'], tokenUsage: { totalTokens: 40 } }],
+      },
+      {
+        reviewerId: 'luna-2',
+        modelRequested: 'gpt-5.6-luna',
+        modelApplied: 'gpt-5.6-luna',
+        rounds: [{ phase: 'initial', round: 1, findingIds: ['F5', 'F6'], tokenUsage: null }],
+      },
+    ],
+    findings: [
+      { findingId: 'F1', classification: 'valid' },
+      { findingId: 'F2', classification: 'false_positive' },
+      { findingId: 'F3', classification: 'valid' },
+      { findingId: 'F4', classification: 'needs_user_decision' },
+      { findingId: 'F5', classification: 'valid' },
+      { findingId: 'F6', classification: 'false_positive' },
+    ],
+  })
+
+  assert.equal(derived.reviewerSessionCount, 5)
+  assert.deepEqual(
+    derived.modelComparison.byModel.map(({ model, reviewerCount }) => ({ model, reviewerCount })),
+    [
+      { model: 'gpt-5.6-sol', reviewerCount: 1 },
+      { model: 'gpt-5.6-terra', reviewerCount: 2 },
+      { model: 'gpt-5.6-luna', reviewerCount: 2 },
+    ],
+  )
+  assert.deepEqual(derived.modelComparison.byModel[0].initialClassificationCounts, {
+    false_positive: 1,
+    valid: 1,
+  })
+  assert.deepEqual(derived.modelComparison.byModel[0].initialUniqueValidFindingIds, [])
+  assert.deepEqual(derived.modelComparison.byModel[1].initialUniqueValidFindingIds, ['F3'])
+  assert.deepEqual(derived.modelComparison.byModel[2].initialUniqueValidFindingIds, ['F5'])
+  assert.deepEqual(derived.modelComparison.initialOverlap.allReviewersSharedFindingIds, ['F1'])
+  assert.equal(derived.modelComparison.byModel[1].initialTokenUsage.invocationCount, 2)
+  assert.equal(derived.modelComparison.byModel[1].initialTokenUsage.complete, false)
+})
+
 test('assigns fallback reviewer IDs before filtering reviewers with findings', () => {
   const derived = deriveMetrics({
     reviewers: [

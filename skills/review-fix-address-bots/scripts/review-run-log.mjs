@@ -80,6 +80,7 @@ const skillFingerprint = () => {
     'SKILL.md',
     'references/review-guidelines.md',
     'references/run-logging.md',
+    'references/reviewer-sessions.md',
     'scripts/review-run-log.mjs',
   ]) {
     hash.update(relativePath)
@@ -237,7 +238,7 @@ const overlapFor = (reviewers, phase) => {
   }
 }
 
-const tokenMetrics = (reviewers) => {
+const tokenMetrics = (reviewers, phase) => {
   const fields = ['inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens']
   const totals = Object.fromEntries(fields.map((field) => [field, 0]))
   const fieldCoverage = Object.fromEntries(fields.map((field) => [field, 0]))
@@ -246,6 +247,7 @@ const tokenMetrics = (reviewers) => {
 
   for (const reviewer of reviewers) {
     for (const round of Array.isArray(reviewer.rounds) ? reviewer.rounds : []) {
+      if (phase && round.phase !== phase) continue
       invocationCount += 1
       const usage = round.tokenUsage
       if (!usage || typeof usage !== 'object' || Array.isArray(usage)) continue
@@ -273,9 +275,94 @@ const tokenMetrics = (reviewers) => {
   }
 }
 
+const classificationCountsFor = (findingIds, findingsById) => {
+  const counts = {}
+  for (const findingId of findingIds) {
+    const classification = findingsById.get(findingId)?.classification || 'unclassified'
+    counts[classification] = (counts[classification] || 0) + 1
+  }
+  return Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)))
+}
+
+const modelComparison = (reviewers, findings) => {
+  const groups = new Map()
+  reviewers.forEach((reviewer, index) => {
+    const model = reviewer.modelApplied || reviewer.modelRequested || 'unknown'
+    const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`
+    if (!groups.has(model)) groups.set(model, { model, reviewerIds: [], reviewers: [] })
+    const group = groups.get(model)
+    group.reviewerIds.push(reviewerId)
+    group.reviewers.push(reviewer)
+  })
+
+  const findingsById = new Map(
+    findings
+      .filter((finding) => finding && typeof finding.findingId === 'string' && finding.findingId.length > 0)
+      .map((finding) => [finding.findingId, finding]),
+  )
+  const entries = [...groups.values()].map((group) => {
+    const initialFindingIds = [
+      ...new Set(group.reviewers.flatMap((reviewer) => findingIdsFor(reviewer, 'initial'))),
+    ].sort()
+    const cumulativeFindingIds = [
+      ...new Set(group.reviewers.flatMap((reviewer) => findingIdsFor(reviewer))),
+    ].sort()
+    return {
+      ...group,
+      initialFindingIds,
+      cumulativeFindingIds,
+      initialValidFindingIds: initialFindingIds.filter(
+        (findingId) => findingsById.get(findingId)?.classification === 'valid',
+      ),
+    }
+  })
+
+  const initialFrequency = new Map()
+  for (const entry of entries) {
+    for (const findingId of entry.initialFindingIds) {
+      initialFrequency.set(findingId, (initialFrequency.get(findingId) || 0) + 1)
+    }
+  }
+
+  const syntheticReviewers = entries.map((entry) => ({
+    reviewerId: entry.model,
+    rounds: [
+      { phase: 'initial', findingIds: entry.initialFindingIds },
+      { phase: 'remediation', findingIds: entry.cumulativeFindingIds },
+    ],
+  }))
+
+  return {
+    byModel: entries.map((entry) => ({
+      model: entry.model,
+      reviewerIds: entry.reviewerIds,
+      reviewerCount: entry.reviewers.length,
+      invocationCount: entry.reviewers.reduce(
+        (count, reviewer) => count + (Array.isArray(reviewer.rounds) ? reviewer.rounds.length : 0),
+        0,
+      ),
+      initialFindingIds: entry.initialFindingIds,
+      initialClassificationCounts: classificationCountsFor(entry.initialFindingIds, findingsById),
+      initialValidFindingIds: entry.initialValidFindingIds,
+      initialUniqueToModelFindingIds: entry.initialFindingIds.filter(
+        (findingId) => initialFrequency.get(findingId) === 1,
+      ),
+      initialUniqueValidFindingIds: entry.initialValidFindingIds.filter(
+        (findingId) => initialFrequency.get(findingId) === 1,
+      ),
+      cumulativeFindingIds: entry.cumulativeFindingIds,
+      initialTokenUsage: tokenMetrics(entry.reviewers, 'initial'),
+      cumulativeTokenUsage: tokenMetrics(entry.reviewers),
+    })),
+    initialOverlap: overlapFor(syntheticReviewers, 'initial'),
+    cumulativeOverlap: overlapFor(syntheticReviewers),
+  }
+}
+
 export const deriveMetrics = (summary = {}) => {
   assertObject(summary, 'summary')
   const reviewers = Array.isArray(summary.reviewers) ? summary.reviewers : []
+  const findings = Array.isArray(summary.findings) ? summary.findings : []
   const initialOverlap = overlapFor(reviewers, 'initial')
   const cumulativeOverlap = overlapFor(reviewers)
   const githubReviewBots = Array.isArray(summary.githubReviewBots) ? summary.githubReviewBots : []
@@ -301,6 +388,7 @@ export const deriveMetrics = (summary = {}) => {
     cumulativeUniqueFindingCount: cumulativeOverlap.uniqueFindingIds.length,
     initialOverlap,
     cumulativeOverlap,
+    modelComparison: modelComparison(reviewers, findings),
     tokenUsage: tokenMetrics(reviewers),
     githubReviewBotCount: githubReviewBots.length,
     reviewBotLoopCount:
