@@ -15,7 +15,7 @@ Resolve the directory containing the skill's `SKILL.md`, then start the log befo
 ```bash
 node scripts/review-run-log.mjs start \
   --repo-root "$PWD" \
-  --data-json '{"requestedReviewerCount":2,"reviewerModelRequested":"gpt-5.6-sol","reasoningRequested":"high","remediationRoundLimit":3,"reviewBotLoopLimit":8}'
+  --data-json '{"requestedReviewerCount":5,"reviewerCohortRequested":[{"model":"gpt-5.6-sol","count":1},{"model":"gpt-5.6-terra","count":2},{"model":"gpt-5.6-luna","count":2}],"reasoningRequested":"high","remediationRoundLimit":3,"reviewBotLoopLimit":8}'
 ```
 
 Keep the returned `logPath` in `.context`. Append an event immediately after each reviewer pass so partial runs remain useful if later work stops:
@@ -27,15 +27,16 @@ node scripts/review-run-log.mjs append \
   --data-file .context/reviewer-pass.json
 ```
 
-Useful events include `target_integrated`, `reviewer_pass_completed`, `finding_classified`, `validation_completed`, `push_completed`, `review_bot_loop_completed`, and `run_blocked`. Events may evolve; keep names lower snake case.
+Useful events include `target_integrated`, `reviewer_session_started`, `reviewer_pass_completed`, `reviewer_continuity_verified`, `finding_classified`, `validation_completed`, `push_completed`, `review_bot_loop_completed`, and `run_blocked`. Events may evolve; keep names lower snake case.
 
-Record experimental inputs when they become known: custom-versus-bundled review prompt source and SHA-256 fingerprint, target/base/head SHAs, diff size, reviewer count, round limits, requested model and reasoning, retries, and relevant skill options. The helper fingerprints the skill instructions and logger automatically. Hash custom prompts instead of storing their contents.
+Record experimental inputs when they become known: custom-versus-bundled review prompt source and SHA-256 fingerprint, target/base/head SHAs, diff size, the requested reviewer cohort, round limits, requested reasoning, launch mechanisms, retries, and relevant skill options. The helper fingerprints the skill instructions and logger automatically. Hash custom prompts instead of storing their contents. The `start` example shows the default cohort; replace its configuration with the resolved user override when applicable.
 
 For every reviewer pass, record:
 
 - stable `reviewerId`, phase (`initial` or `remediation`), and one-based round,
-- invocation start/completion order and session identifier when available,
+- invocation start/completion order, launch mechanism, and session identifier when available,
 - requested and actually applied model and reasoning level separately,
+- continuity-handshake result for every persistent session,
 - stable deduplicated `findingIds` once available,
 - whether the pass found any issue and whether findings were new, repeated, or overlapping,
 - actual token usage when the runtime exposes it; otherwise use `null`, never an estimate,
@@ -52,11 +53,21 @@ Always attempt `finish`, including for blocked or failed runs. Pass a summary wi
   "status": "complete",
   "reviewers": [
     {
-      "reviewerId": "reviewer-1",
+      "reviewerId": "sol-1",
+      "launchMechanism": "native",
+      "sessionId": "opaque-session-id",
       "modelRequested": "gpt-5.6-sol",
       "modelApplied": "gpt-5.6-sol",
       "reasoningRequested": "high",
       "reasoningApplied": "high",
+      "continuityVerified": true,
+      "continuityChecks": [
+        {
+          "round": 1,
+          "verified": true,
+          "tokenUsage": null
+        }
+      ],
       "rounds": [
         {
           "phase": "initial",
@@ -71,7 +82,7 @@ Always attempt `finish`, including for blocked or failed runs. Pass a summary wi
     {
       "findingId": "F1",
       "classification": "valid",
-      "reportedBy": ["reviewer-1"],
+      "reportedBy": ["sol-1"],
       "action": "fixed"
     }
   ],
@@ -80,12 +91,36 @@ Always attempt `finish`, including for blocked or failed runs. Pass a summary wi
 }
 ```
 
+Include one reviewer object for every configured reviewer, even when it found no issues. Preserve applied model and reasoning fields so comparisons and labels reflect what actually ran rather than what was merely requested; leave an unavailable `modelApplied` or `reasoningApplied` unset so the helper reports it as `unknown`. Record every continuity attempt in `continuityChecks`, including retries and `tokenUsage: null` when the runtime exposes no accounting.
+
 ```bash
 node scripts/review-run-log.mjs finish \
   --log "$REVIEW_RUN_LOG" \
+  --collect-codex-usage \
   --data-file .context/review-run-summary.json
 ```
 
-The helper derives reviewer session and invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, and token totals with per-field coverage. Record a GitHub bot's model/version only when GitHub exposes it; otherwise use `null`. Preserve the raw reviewer/round/finding arrays so future analyses can compute different metrics without changing old logs.
+For native Codex reviewers, `--collect-codex-usage` deterministically discovers the cohort under `${CODEX_HOME:-~/.codex}/sessions`, matches the run window, repository root, parent thread, and reviewer IDs, verifies that each session's completed task count equals its recorded review-plus-continuity invocation count, and copies the final cumulative `token_count` values into the finished log. It refuses ambiguous cohorts or mismatched invocation counts instead of guessing. Record exact session IDs in the summary whenever the runtime exposes them; they further constrain discovery.
+
+The helper derives reviewer session and invocation counts, continuity-invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, and token totals with per-field coverage. Invocation and cumulative token metrics include both review rounds and continuity checks; initial token metrics remain limited to the initial review pass. The helper also groups reviewers only by applied model and derives initial finding classifications, valid and model-unique valid finding IDs, cross-model overlap, per-reviewer usage, and estimated costs.
+
+Cost is an API-equivalent estimate based on the embedded, dated standard-service GPT-5.6 pricing snapshot. The helper prices `cachedInputTokens` as cache reads, prices the remaining input as uncached, and prices all output tokens at the output rate; reasoning tokens are already included in output and are not added again. It returns `null` rather than estimating when the applied model or any required token field is missing. The estimate is not an invoice: Codex plan billing may differ, cache-write premiums cannot be identified from the aggregate counters, and long-context or non-standard service-tier premiums are excluded. Cite the pricing date and source in the final report.
+
+After `finish`, generate the final usage section deterministically:
+
+```bash
+node scripts/review-run-log.mjs report --log "$REVIEW_RUN_LOG" \
+  > .context/reviewer-usage-report.md
+```
+
+Append `.context/reviewer-usage-report.md` verbatim as the final section of the user-facing workflow summary. Do not manually recompute, reorder, or reformat its values. The command renders this exact Markdown column order, with `Estimated cost` immediately after `Total`:
+
+```markdown
+| Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost |
+|---|---:|---:|---:|---:|---:|---:|
+| Sol1 (high) | 100,000 | 90,000 | 2,000 | 1,200 | 102,000 | $0.1550 |
+```
+
+The generated table uses `n/a` for unavailable usage or estimates. If collection is unavailable, report the helper's reason before the final generated section, but do not have the parent model parse rollout files or invent replacement values. Preserve the raw reviewer/round/continuity/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.
 
 If logging fails, do not hide the failure or fabricate a record. Report it, but do not let telemetry failure cause unsafe Git, PR, or code mutations.

@@ -19,7 +19,7 @@ npx skills add biw/skills
 - [`conductor-setup`](./skills/conductor-setup/SKILL.md): configure `.conductor/settings.toml`, migrate legacy `conductor.json`, and set up Conductor workspace scripts; use it as `/conductor-setup` in agent chats.
 - [`detailed-pr-description`](./skills/detailed-pr-description/SKILL.md): write review-ready GitHub PR descriptions with change context, gotchas, follow-up work, code snippets, and test coverage assessment.
 - [`electron-flamegraph`](./skills/electron-flamegraph/SKILL.md): profile Electron main-process CPU usage and analyze `.cpuprofile` files.
-- [`review-fix-address-bots`](./skills/review-fix-address-bots/SKILL.md): run two read-only GPT-5.6 Sol reviews, resolve findings through bounded critique, and close GitHub review-bot feedback loops.
+- [`review-fix-address-bots`](./skills/review-fix-address-bots/SKILL.md): compare five persistent GPT-5.6 Sol, Terra, and Luna reviews, resolve findings through bounded critique, and close GitHub review-bot feedback loops.
 
 ## License
 
