@@ -14,7 +14,7 @@ import {
   renderUsageTable,
   sanitizeRemote,
   startRun,
-} from './review-run-log.mjs'
+} from '../../skills/review-fix-address-bots/scripts/review-run-log.mjs'
 
 test('writes dated JSONL and derives reviewer overlap without inventing token usage', () => {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'review-run-log-'))
@@ -123,9 +123,13 @@ test('writes dated JSONL and derives reviewer overlap without inventing token us
 })
 
 test('sanitizes remote credentials and transport details', () => {
+  const credentialedRemote = new URL('https://example.invalid/acme/repository.git?ignored=value')
+  credentialedRemote.username = 'fixture-user'
+  credentialedRemote.password = 'fixture-password'
+
   assert.equal(
-    sanitizeRemote('https://token:secret@github.com/biw/skills.git?credential=bad', 'fallback'),
-    'github.com/biw/skills',
+    sanitizeRemote(credentialedRemote.href, 'fallback'),
+    'example.invalid/acme/repository',
   )
   assert.equal(sanitizeRemote('git@github.com:biw/skills.git', 'fallback'), 'github.com/biw/skills')
   assert.equal(sanitizeRemote(undefined, 'local-repo'), 'local-repo')

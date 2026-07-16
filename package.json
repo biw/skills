@@ -8,7 +8,7 @@
   "scripts": {
     "precommit": "pnpm validate",
     "skills": "skills",
-    "validate": "node scripts/validate-skills.mjs"
+    "validate": "node scripts/validate-skills.mjs && node --test"
   },
   "devDependencies": {
     "skills": "1.5.6",
