@@ -3,6 +3,7 @@
 This repository publishes Agent Skills from `biw/skills`.
 
 - Put installable skills under `skills/<skill-name>/SKILL.md`.
+- When adding an installable skill, add it to the README's Available Skills list with a link and concise description.
 - Start from both templates under `templates/skill/`, including `agents/openai.yaml.tmpl`.
 - Keep the `name` frontmatter exactly equal to the parent folder name.
 - Write descriptions as clear trigger surfaces in 200 characters or fewer.
