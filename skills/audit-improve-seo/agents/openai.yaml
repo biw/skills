@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit and Improve SEO"
+  short_description: "Audit and improve codebase SEO"
+  default_prompt: "Use $audit-improve-seo to audit and improve this codebase SEO, including page OG images."

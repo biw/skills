@@ -15,6 +15,7 @@ npx skills add biw/skills
 ## Available Skills
 
 - [`address-review-bots`](./skills/address-review-bots/SKILL.md): wait for and triage Claude, Devin, and similar GitHub PR review-bot feedback.
+- [`audit-improve-seo`](./skills/audit-improve-seo/SKILL.md): audit and improve technical and on-page SEO, including metadata, indexability, structured data, and generated social images.
 - [`better-logging`](./skills/better-logging/SKILL.md): design durable operation outcome events so failures, latency, retries, and rollouts are queryable.
 - [`conductor-setup`](./skills/conductor-setup/SKILL.md): configure `.conductor/settings.toml`, migrate legacy `conductor.json`, and set up Conductor workspace scripts; use it as `/conductor-setup` in agent chats.
 - [`detailed-pr-description`](./skills/detailed-pr-description/SKILL.md): write review-ready GitHub PR descriptions with change context, gotchas, follow-up work, code snippets, and test coverage assessment.
