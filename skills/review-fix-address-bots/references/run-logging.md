@@ -15,7 +15,7 @@ Resolve the directory containing the skill's `SKILL.md`, then start the log befo
 ```bash
 node scripts/review-run-log.mjs start \
   --repo-root "$PWD" \
-  --data-json '{"requestedReviewerCount":5,"reviewerCohortRequested":[{"model":"gpt-5.6-sol","count":1},{"model":"gpt-5.6-terra","count":2},{"model":"gpt-5.6-luna","count":2}],"reasoningRequested":"high","remediationRoundLimit":3,"reviewBotLoopLimit":8}'
+  --data-json '{"requestedReviewerCount":3,"reviewerCohortRequested":[{"model":"gpt-5.6-sol","count":1},{"model":"gpt-5.6-terra","count":1},{"model":"gpt-5.6-luna","count":1}],"reasoningRequested":"high","remediationRoundLimit":3,"reviewBotLoopLimit":8}'
 ```
 
 Keep the returned `logPath` in `.context`. Append an event immediately after each reviewer pass so partial runs remain useful if later work stops:
