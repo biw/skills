@@ -22,7 +22,7 @@ Use this skill when the user asks for a detailed PR description, a PR body rewri
 3. Review the code like a reviewer.
    - Determine what the PR does, what behavior or maintainability it improves, and what is deliberately out of scope.
    - Identify risky code paths, compatibility concerns, edge cases, operational gotchas, migrations, flags, cleanup steps, and reviewer focus areas.
-   - Pull in short, high-signal code snippets when they explain a design decision, a tricky behavior, or a key contract. Prefer file paths and line references around each snippet.
+   - For every item in `Code To Review Closely`, keep the reviewer-facing explanation, then include a short, high-signal excerpt of the exact code that needs review. Use only as many lines as necessary (up to 40) to show the design decision, tricky behavior, or key contract; prefer a file path and line reference around it.
 
 4. Assess the tests directly.
    - Inventory existing tests affected by the diff and any new tests added by the branch.
@@ -69,7 +69,7 @@ Briefly state the problem, the approach, and the user-visible or developer-visib
 Why this file matters and what reviewers should verify.
 
 ```language
-small focused snippet
+short, focused excerpt of the actual code reviewers should inspect (up to 40 lines)
 ```
 
 ## Gotchas, Risks, And Edge Cases
@@ -106,7 +106,7 @@ Add sections for screenshots, rollout, migrations, flags, performance, accessibi
 - Make the PR description factual and traceable to code, tests, docs, commits, or command output.
 - Preserve the existing PR title and useful existing body content unless replacing it improves clarity.
 - Avoid vague phrases such as "various fixes" or "improves behavior" without naming the behavior.
-- Keep snippets short enough to review in the PR body. Link or cite files for larger context.
+- In `Code To Review Closely`, pair each explanation with a short, focused excerpt of actual code from the relevant changed file. Use only as many lines as necessary, with 40 lines as the maximum. Do not substitute pseudocode, paraphrases, or unrelated surrounding code; link or cite the file for larger context.
 - Separate verified facts from judgment calls and assumptions.
 - Include failed, skipped, or unavailable validations, with the reason.
 - Do not make unrelated code changes while updating the PR description unless the user explicitly asks.
