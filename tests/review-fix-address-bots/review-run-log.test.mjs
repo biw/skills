@@ -44,6 +44,13 @@ test('writes dated JSONL and derives reviewer overlap without inventing token us
         reviewers: [
           {
             reviewerId: 'reviewer-1',
+            launchMechanism: 'native',
+            sessionId: 'session-reviewer-1',
+            modelRequested: 'test-model',
+            modelApplied: 'test-model',
+            reasoningRequested: 'high',
+            reasoningApplied: 'high',
+            continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
             rounds: [
               {
                 phase: 'initial',
@@ -56,6 +63,13 @@ test('writes dated JSONL and derives reviewer overlap without inventing token us
           },
           {
             reviewerId: 'reviewer-2',
+            launchMechanism: 'native',
+            sessionId: 'session-reviewer-2',
+            modelRequested: 'test-model',
+            modelApplied: 'test-model',
+            reasoningRequested: 'high',
+            reasoningApplied: 'high',
+            continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
             rounds: [
               { phase: 'initial', round: 1, findingIds: ['F1', 'F2'], tokenUsage: null },
               { phase: 'remediation', round: 1, findingIds: ['F4'], tokenUsage: null },
@@ -63,6 +77,13 @@ test('writes dated JSONL and derives reviewer overlap without inventing token us
           },
           {
             reviewerId: 'reviewer-3',
+            launchMechanism: 'native',
+            sessionId: 'session-reviewer-3',
+            modelRequested: 'test-model',
+            modelApplied: 'test-model',
+            reasoningRequested: 'high',
+            reasoningApplied: 'high',
+            continuityChecks: [{ round: 1, verified: true, tokenUsage: null }],
             rounds: [{ phase: 'initial', round: 1, findingIds: ['F2', 'F5'], tokenUsage: null }],
           },
         ],
@@ -73,7 +94,7 @@ test('writes dated JSONL and derives reviewer overlap without inventing token us
 
     const derived = finished.data.derived
     assert.equal(derived.reviewerSessionCount, 3)
-    assert.equal(derived.reviewerInvocationCount, 5)
+    assert.equal(derived.reviewerInvocationCount, 8)
     assert.equal(derived.initialUniqueFindingCount, 3)
     assert.equal(derived.cumulativeUniqueFindingCount, 5)
     assert.deepEqual(derived.initialOverlap.allReviewersSharedFindingIds, ['F2'])
