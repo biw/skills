@@ -8,66 +8,51 @@ metadata:
 
 # Conductor Setup
 
-When this skill is invoked directly, proactively audit the repository's Conductor setup and either apply the needed configuration changes or report that no changes are needed.
-
-Use this skill when configuring a repository for Conductor workspaces. Focus first on `.conductor/settings.toml`; treat root-level `conductor.json` as legacy input to migrate.
+Use this skill when configuring a repository for Conductor workspaces. When invoked directly, audit the setup against the conventions below and either apply the changes or report that none are needed.
 
 ## Workflow
 
-1. Inspect `.conductor/settings.toml`, `.conductor/settings.local.toml`, legacy `conductor.json`, `.worktreeinclude`, existing `conductor-setup.sh`, `conductor-run.sh`, `conductor-shutdown.sh`, `conductor-archive.sh`, package scripts, and repo docs.
+1. Inspect `.conductor/settings.toml`, `.conductor/settings.local.toml`, legacy `conductor.json`, `.worktreeinclude`, `.conductor/*.sh`, legacy root-level `conductor-*.sh`, package scripts, and repo docs.
 2. Read `references/conductor-docs.md` before changing script fields or environment variable usage.
-3. Choose the right settings file:
-   - Use committed `.conductor/settings.toml` for shared team defaults.
-   - Use `.conductor/settings.local.toml` for machine-local project overrides, and keep it gitignored.
-   - Use `~/.conductor/settings.toml` only for user-wide preferences outside the repository.
-   - If `conductor.json` exists, migrate supported fields into `.conductor/settings.toml` and remove `conductor.json` unless the user asks to keep the legacy file.
-4. Keep setup, run, and archive/shutdown responsibilities separate:
-   - `scripts.setup`: prepare a new workspace.
-   - `scripts.run.<id>.command`: start long-running app/server/test processes from the Run button.
-   - `scripts.archive`: run shutdown cleanup before a workspace is archived.
-   - `scripts.run_mode`: decide whether run scripts can overlap.
-5. Use Conductor variables instead of hard-coded paths or ports:
-   - `$CONDUCTOR_WORKSPACE_PATH` for the active workspace.
-   - `$CONDUCTOR_ROOT_PATH` for shared root-level resources and caches.
-   - `$CONDUCTOR_WORKSPACE_NAME` for workspace-specific names.
-   - `$CONDUCTOR_PORT` for server ports.
-   - `$CONDUCTOR_IS_LOCAL` to branch between local Mac and cloud workspace behavior.
-6. For monorepos and multi-repo systems, prefer Conductor's working-directory selection, `/add-dir`, or per-repository run scripts over hard-coded sibling checkout paths.
-7. Validate TOML syntax and run the narrowest relevant local check for any script you touch.
+3. Pick the settings file: committed `.conductor/settings.toml` for team defaults, gitignored `.conductor/settings.local.toml` for machine-local overrides, `~/.conductor/settings.toml` for user-wide preferences only. Migrate any `conductor.json` into `.conductor/settings.toml` and delete it unless the user wants it kept.
+4. Keep script roles separate: `scripts.setup` prepares a new workspace, `scripts.run.<id>.command` starts long-running processes from the Run button, `scripts.archive` cleans up before archiving, `scripts.run_mode` decides whether run scripts may overlap.
+5. Use Conductor variables over hard-coded paths and ports: `$CONDUCTOR_WORKSPACE_PATH`, `$CONDUCTOR_ROOT_PATH` (shared resources and caches), `$CONDUCTOR_WORKSPACE_NAME`, `$CONDUCTOR_PORT`, `$CONDUCTOR_IS_LOCAL` (local vs cloud).
+6. Validate TOML syntax and run the narrowest relevant local check for any script you touch.
 
-## Required Conventions
+## Conventions
 
-- Put shared repository settings in `.conductor/settings.toml` with the repository schema URL. Do not create new `conductor.json` files.
-- Prefer named run scripts under `[scripts.run.<id>]` with `command`, `default`, and `icon`. `scripts.run = "..."` is still read as a legacy single run script, but new shared config should use named run scripts.
-- Always use copy-on-write cloning for files over 100 MB when duplicating large artifacts. On macOS prefer `cp -c`; on Linux prefer `cp --reflink=auto`. If clone/reflink is unavailable, prefer a symlink or shared cache under `$CONDUCTOR_ROOT_PATH` unless the repo needs a true copy.
-- Route every `conductor-setup.sh` run to `conductor-setup.log` so setup failures are easy to debug in loops. Preserve exit codes with `pipefail` when piping through `tee`.
-- Use a committed `.worktreeinclude` or `file_include_globs` in `.conductor/settings.toml` for static gitignored files that should be copied into every workspace. Keep setup scripts for commands, generated files, symlinks, and workspace-specific resources.
-- Put required PATH/toolchain setup directly in setup or run scripts when possible. Do not rely on slow, interactive, or prompt-producing shell startup files.
-- Put shared caches outside individual workspaces under `$CONDUCTOR_ROOT_PATH`, and use the archive/shutdown script to flush, update, compact, or clean those shared caches.
-- Do not background long-running run-script processes with `&`. Use `concurrently`, a supervisor, or a single foreground process group so Conductor can stop everything cleanly.
-- Use `scripts.run_mode = "nonconcurrent"` only when the project cannot safely run multiple workspace instances because of a single fixed port, database, or shared local resource.
-- Use Spotlight testing instead of overcomplicated run/setup scripts when the project truly needs the repository root checkout, expensive root build artifacts, or one heavy local stack.
-- Do not commit secrets, provider API keys, or machine-specific credentials in `.conductor/settings.toml`. Put machine-local values in `.conductor/settings.local.toml`, local shell config, or gitignored files copied into workspaces. Only change `.mcp.json` or `enterprise_data_privacy` when the user asks or the repository policy requires it.
+- Put shared settings in `.conductor/settings.toml` with the repository schema URL, using only documented repository fields. Do not create new `conductor.json` files.
+- Prefer named run scripts under `[scripts.run.<id>]` with `command`, `default`, and `icon`, marking one `default = true` when there are several. Bare `scripts.run = "..."` is legacy.
+- Keep Conductor scripts and logs together in `.conductor/`, unprefixed: `setup.sh`, `run.sh`, `shutdown.sh`, `archive.sh`, `setup.log`. Commit the scripts, gitignore the logs, and move root-level `conductor-*.sh` in, updating every reference. Conductor imposes no script location or filename, so this is a repository convention — leave an existing deliberate layout such as `script/` or `bin/` alone.
+- Route `.conductor/setup.sh` output to `.conductor/setup.log` so failures are debuggable in loops. Preserve exit codes with `pipefail` when piping through `tee`.
+- For static gitignored files that every workspace needs, use a committed `.worktreeinclude` at the repository root or `file_include_globs`. Reserve setup scripts for commands, generated files, symlinks, and workspace-specific resources.
+- Copy files over 100 MB copy-on-write: `cp -c` on macOS, `cp --reflink=auto` on Linux, falling back to a symlink or a shared `$CONDUCTOR_ROOT_PATH` cache unless a true copy is required.
+- Put PATH/toolchain setup directly in the scripts. Do not depend on slow, interactive, or prompt-producing shell startup files.
+- Keep shared caches under `$CONDUCTOR_ROOT_PATH`, not inside transient workspaces, and use the archive script to flush or compact them and to clean only resources the workspace owns.
+- Do not background run-script processes with `&`. Use `concurrently`, a supervisor, or one foreground process group so Conductor can stop everything cleanly.
+- Reach for `run_mode = "nonconcurrent"` or Spotlight testing only when the project genuinely cannot run multiple instances — a single fixed port, database, root-only checkout, or one heavy local stack — never brittle workspace path hacks.
+- Handle monorepos and linked repositories with Conductor's working-directory selection, `/add-dir`, or per-repository run scripts, not hard-coded sibling checkout paths.
+- Do not commit secrets or machine-specific credentials to `.conductor/settings.toml`; put them in `.conductor/settings.local.toml`, shell config, or gitignored copied files. Only touch `.mcp.json` or `enterprise_data_privacy` when asked or when repository policy requires it.
 
 ## Snippet
 
-Use this as a starting point and adapt command names to the repository:
+Adapt command names to the repository, and gitignore `.conductor/*.log`:
 
 ```toml
 "$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
 
 [scripts]
-setup = "bash -lc 'set -o pipefail; ./conductor-setup.sh 2>&1 | tee conductor-setup.log'"
-archive = "./conductor-shutdown.sh"
+setup = "bash -lc 'set -o pipefail; ./.conductor/setup.sh 2>&1 | tee .conductor/setup.log'"
+archive = "./.conductor/shutdown.sh"
 run_mode = "concurrent"
 
 [scripts.run.dev]
-command = "./conductor-run.sh"
+command = "./.conductor/run.sh"
 default = true
 icon = "play"
 ```
 
-Inside `conductor-setup.sh`, make large-file copies explicit:
+Inside `.conductor/setup.sh`, make large-file copies explicit:
 
 ```bash
 copy_large_file() {
@@ -81,17 +66,3 @@ copy_large_file() {
   fi
 }
 ```
-
-## Review Checklist
-
-- `.conductor/settings.toml` has a repository schema URL and uses only documented repository fields.
-- Legacy `conductor.json` has been migrated or intentionally left in place with a clear reason.
-- Named run scripts use stable IDs under `[scripts.run.<id>]`; one script is marked `default = true` when there are multiple commands.
-- Setup work that only copies static gitignored files is not over-engineered; prefer `.worktreeinclude` for team-shared file-copy patterns.
-- Scripts contain their own required shell setup and do not depend on interactive prompts or slow startup files.
-- Setup logs land in `conductor-setup.log`.
-- Run scripts use `$CONDUCTOR_PORT` or `scripts.run_mode = "nonconcurrent"` when needed.
-- Shared caches live under `$CONDUCTOR_ROOT_PATH`, not inside transient workspace directories.
-- Shutdown/archive logic updates shared caches and cleans only resources owned by the workspace.
-- Root-only, fixed-resource, or very expensive local stacks are handled with Spotlight testing or `nonconcurrent`, not brittle workspace path hacks.
-- Monorepo and multi-repository needs are handled with Conductor working-directory selection, `/add-dir`, or separate per-repository scripts.
