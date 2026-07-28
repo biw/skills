@@ -288,7 +288,7 @@ Do not commit provider credentials or machine-local secrets in `.conductor/setti
 
 ## Troubleshooting Signals
 
-For setup failures, check `conductor-setup.log`, missing ignored files, dependencies installed only in the repository root, fixed absolute paths, and unavailable authentication.
+For setup failures, check `.conductor/setup.log`, missing ignored files, dependencies installed only in the repository root, fixed absolute paths, and unavailable authentication.
 
 For run failures, check fixed ports, shared databases or caches, backgrounded processes, and commands that only work from the root checkout. Use `$CONDUCTOR_PORT`, workspace-specific resource names, `nonconcurrent`, or Spotlight testing based on the actual cause.
 
