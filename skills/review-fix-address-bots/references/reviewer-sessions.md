@@ -14,7 +14,7 @@ Keep the raw review prompt, target fingerprint, reviewer role boundary, and any 
 
 ## Choose a persistent launcher
 
-Prefer the native subagent launcher when it exposes exact model selection, the configured reasoning level, and a stable session handle that accepts follow-up turns. Verify the applied settings from runtime evidence for every reviewer; requested arguments alone are not proof when the runtime does not confirm them.
+Prefer the native subagent launcher when it exposes exact model selection, the configured reasoning level, and a stable session handle that accepts follow-up turns. Launch each initial reviewer with `fork_turns: "none"` and a self-contained review packet; do not fork the primary agent's full conversation. Full-history forks must inherit the parent model, so they cannot preserve an independently pinned Sol/Terra/Luna cohort and add irrelevant parent context. Verify the applied settings from runtime evidence for every reviewer; requested arguments alone are not proof when the runtime does not confirm them.
 
 If a Codex native `spawn_agent` schema hides `model`, `reasoning_effort`, `agent_type`, or `service_tier`, check whether the user already configured the MultiAgent V2 routing-field workaround:
 
