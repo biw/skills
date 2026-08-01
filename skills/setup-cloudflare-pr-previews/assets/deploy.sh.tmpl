@@ -328,21 +328,21 @@ echo "Database: $DB_NAME ($DB_ID)"
 
 patch_built_wrangler_database "$DB_ID" "$DB_NAME"
 
-d1_execute_remote --command "INSERT INTO deployment_history (branch, deployed_at, build_id, commit_sha) VALUES ('$BRANCH_SQL', datetime('now'), '$BUILD_ID_SQL', '$COMMIT_SHA_SQL');"
-
 VAR_FLAGS=()
 for var_name in "${URL_VAR_NAMES[@]}"; do
   VAR_FLAGS+=(--var "${var_name}:${RESOLVED_DEPLOY_URL}")
 done
 
 if [ "$TARGET_ENV" = "production" ]; then
-  echo "Running wrangler deploy --env production..."
-  pnpm wrangler deploy --config "$BUILT_WRANGLER_CONFIG" --env production "${VAR_FLAGS[@]}"
+  echo "Running wrangler deploy with the flattened production build config..."
+  pnpm wrangler deploy --config "$BUILT_WRANGLER_CONFIG" "${VAR_FLAGS[@]}"
 elif [ "$DEPLOY_MODE" = "live-preview" ]; then
-  echo "Running wrangler deploy --env preview..."
-  pnpm wrangler deploy --config "$BUILT_WRANGLER_CONFIG" --env preview "${VAR_FLAGS[@]}"
+  echo "Running wrangler deploy with the flattened preview build config..."
+  pnpm wrangler deploy --config "$BUILT_WRANGLER_CONFIG" "${VAR_FLAGS[@]}"
 else
-  echo "Running wrangler versions upload --env preview..."
-  pnpm wrangler versions upload --config "$BUILT_WRANGLER_CONFIG" --env preview --preview-alias "$PREVIEW_ALIAS" "${VAR_FLAGS[@]}"
+  echo "Running wrangler versions upload with the flattened preview build config..."
+  pnpm wrangler versions upload --config "$BUILT_WRANGLER_CONFIG" --preview-alias "$PREVIEW_ALIAS" "${VAR_FLAGS[@]}"
   echo "Preview URL: $RESOLVED_DEPLOY_URL"
 fi
+
+d1_execute_remote --command "INSERT INTO deployment_history (branch, deployed_at, build_id, commit_sha) VALUES ('$BRANCH_SQL', datetime('now'), '$BUILD_ID_SQL', '$COMMIT_SHA_SQL');"

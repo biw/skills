@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Parse a V8 .cpuprofile (as written by --cpu-prof or the inspector Profiler domain)
-// and surface hot functions, main-thread stalls, and common perf anti-patterns.
+// and surface hot functions, irregular sampling gaps, and common perf anti-patterns.
 //
-// Usage: node analyze-cpuprofile.mjs <path> [--top=N] [--stall-threshold-ms=N] [--json]
+// Usage: node analyze-cpuprofile.mjs <path> [--top=N] [--sampling-gap-threshold-ms=N] [--json]
 
 import { readFileSync } from 'node:fs'
 import { argv, exit, stdout } from 'node:process'
@@ -11,7 +11,7 @@ import { argv, exit, stdout } from 'node:process'
 
 const [, , profilePath, ...flags] = argv
 if (!profilePath) {
-  console.error('usage: analyze-cpuprofile.mjs <path-to-cpuprofile> [--top=N] [--stall-threshold-ms=N] [--json]')
+  console.error('usage: analyze-cpuprofile.mjs <path-to-cpuprofile> [--top=N] [--sampling-gap-threshold-ms=N] [--json]')
   exit(1)
 }
 
@@ -20,7 +20,10 @@ const flagVal = (name, fallback) => {
   return f ? Number(f.split('=')[1]) : fallback
 }
 const topN = flagVal('--top', 20)
-const stallMs = flagVal('--stall-threshold-ms', 50)
+const samplingGapMs = flagVal(
+  '--sampling-gap-threshold-ms',
+  flagVal('--stall-threshold-ms', 50),
+)
 const asJson = flags.includes('--json')
 
 // --- load -------------------------------------------------------------------
@@ -141,20 +144,22 @@ for (const n of nodes) {
   categorySelfUs[categorize(n.callFrame)] += selfTimeUs.get(n.id) ?? 0
 }
 
-// --- stall detection --------------------------------------------------------
+// --- sampling-gap detection -------------------------------------------------
 
-// A large timeDelta means V8's sampler couldn't preempt between samples —
-// i.e., the thread was running uninterrupted JS or (more often) blocking native code.
-// The sample's stack at that point is our best hint at what was stalling.
-const stallThresholdUs = stallMs * 1000
-const stalls = []
+// timeDeltas describe intervals between adjacent profiler samples. A large
+// interval can come from scheduling, profiler behavior, process suspension, or
+// workload behavior; it does not by itself prove that the event loop was
+// blocked. Surface these as capture-quality evidence without attributing the
+// full interval to the sample that follows it.
+const samplingGapThresholdUs = samplingGapMs * 1000
+const samplingGaps = []
 for (let i = 0; i < samples.length; i++) {
   const dt = timeDeltas[i] ?? 0
-  if (dt >= stallThresholdUs) {
-    stalls.push({ sampleIdx: i, nodeId: samples[i], durationUs: dt })
+  if (dt >= samplingGapThresholdUs) {
+    samplingGaps.push({ sampleIdx: i, nodeId: samples[i], durationUs: dt })
   }
 }
-stalls.sort((a, b) => b.durationUs - a.durationUs)
+samplingGaps.sort((a, b) => b.durationUs - a.durationUs)
 
 // Build a call stack (leaf -> root) for a node id
 const stackFor = (leafId) => {
@@ -186,12 +191,12 @@ const urlMatches = (re) => (f) => re.test(f.url || '')
 const warnings = []
 const addWarning = (level, message) => warnings.push({ level, message })
 
-// Idle percentage — high idle = event loop not blocked
+// Idle percentage — high idle means the capture does not show sustained CPU work.
 const idlePct = totalSampledUs > 0 ? (categorySelfUs.idle / totalSampledUs) * 100 : 0
-if (idlePct > 70 && stalls.length === 0) {
+if (idlePct > 70 && samplingGaps.length === 0) {
   addWarning(
     'info',
-    `${idlePct.toFixed(0)}% of sampled time was (idle) and no stalls detected. If the user reports blocking, the culprit is likely the renderer or a UX problem, not the main process.`,
+    `${idlePct.toFixed(0)}% of sampled time was (idle) with no large sampling gaps. The profile does not show sustained main-process CPU work; use tracing or event-loop delay instrumentation before concluding where a responsiveness problem lives.`,
   )
 }
 
@@ -269,9 +274,9 @@ if (asJson) {
         ),
         topSelf,
         topTotal,
-        stalls: stalls.slice(0, 20).map((s) => ({
-          durationUs: s.durationUs,
-          stack: stackFor(s.nodeId).map(labelNode),
+        samplingGaps: samplingGaps.slice(0, 20).map((gap) => ({
+          durationUs: gap.durationUs,
+          sampleAfterGap: stackFor(gap.nodeId).map(labelNode),
         })),
         warnings,
       },
@@ -322,14 +327,14 @@ for (const [id, us] of byTotal) {
   console.log(`  ${fmtMs(us).padStart(10)}  ${pct(us).padStart(7)}  ${labelNode(node)}`)
 }
 
-console.log(`\n--- Main-thread stalls (samples >= ${stallMs}ms) ---`)
-if (stalls.length === 0) {
-  console.log(`  None detected. Event loop was not blocked for >=${stallMs}ms during capture.`)
+console.log(`\n--- Large sampling gaps (intervals >= ${samplingGapMs}ms) ---`)
+if (samplingGaps.length === 0) {
+  console.log(`  None detected. This does not prove the event loop remained responsive; CPU profiles do not directly measure event-loop delay.`)
 } else {
-  console.log(`  ${stalls.length} stall(s). Showing top ${Math.min(10, stalls.length)}:\n`)
-  for (const s of stalls.slice(0, 10)) {
-    const stack = stackFor(s.nodeId)
-    console.log(`  ${fmtMs(s.durationUs)} stall — leaf: ${stack[0] ? labelNode(stack[0]) : '(unknown)'}`)
+  console.log(`  ${samplingGaps.length} gap(s). Showing top ${Math.min(10, samplingGaps.length)}. A gap is not proof of a main-thread stall.\n`)
+  for (const gap of samplingGaps.slice(0, 10)) {
+    const stack = stackFor(gap.nodeId)
+    console.log(`  ${fmtMs(gap.durationUs)} sampling gap — sample after gap: ${stack[0] ? labelNode(stack[0]) : '(unknown)'}`)
     for (const frame of stack.slice(1, 6)) {
       console.log(`      ← ${labelNode(frame)}`)
     }
