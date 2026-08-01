@@ -12,6 +12,8 @@
 
 With `@cloudflare/vite-plugin`, `wrangler.jsonc` is build input. The plugin emits a deployable Worker config with the bundle. Its path depends on the framework and build configuration, so locate it from a real build instead of assuming a fixed output path.
 
+The emitted config is flattened to the environment selected at build time. Deploy that generated config without `--env`; deployment-time environment selection is not applicable to the flattened output.
+
 The D1 UUID must be patched in both places for different reasons:
 
 - a temporary copy of source `wrangler.jsonc` lets Wrangler target the correct D1 database while applying migrations and running verification SQL;
@@ -102,7 +104,8 @@ For Better Auth, `BETTER_AUTH_URL` must exactly match the active stable or alias
 2. Confirm the emitted config exists at the path consumed by `deploy.sh`.
 3. Inspect its `name`, `vars`, D1 binding, R2 bindings, compatibility date, and preview URL setting.
 4. Run a copy of the D1 patch operation against the emitted config and assert only the configured binding changed.
-5. Verify browser code does not contain a secret or an incorrect stable URL where the active origin is required.
-6. Run local development with a non-default port when the app supports it and confirm server and client origin handling remain aligned.
+5. Confirm generated-config deploy and version-upload commands do not pass `--env`.
+6. Verify browser code does not contain a secret or an incorrect stable URL where the active origin is required.
+7. Run local development with a non-default port when the app supports it and confirm server and client origin handling remain aligned.
 
-Cloudflare documents Vite environment selection in the Wrangler environments guide: <https://developers.cloudflare.com/workers/wrangler/environments/>.
+Cloudflare documents the flattened build config and build-time environment selection here: <https://developers.cloudflare.com/workers/vite-plugin/reference/cloudflare-environments/>.

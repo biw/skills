@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import {
+  LOG_TEMPLATES,
   PRICING_SNAPSHOT,
   appendEvent,
   collectCodexSessionUsage,
@@ -15,6 +16,32 @@ import {
   sanitizeRemote,
   startRun,
 } from '../../skills/review-fix-address-bots/scripts/review-run-log.mjs'
+
+test('canonical templates produce a finishable event-driven run', () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'review-run-templates-'))
+  try {
+    const { logPath } = startRun({
+      repoRoot: temporaryRoot,
+      outputRoot: join(temporaryRoot, 'logs'),
+      configuration: LOG_TEMPLATES.configuration,
+    })
+    for (const template of [
+      LOG_TEMPLATES.events.reviewerSessionStarted,
+      LOG_TEMPLATES.events.initialPass,
+      LOG_TEMPLATES.events.continuity,
+      LOG_TEMPLATES.events.findingResolved,
+    ]) {
+      appendEvent({ logPath, event: template.event, data: template.data })
+    }
+
+    const finished = finishRun({ logPath, summary: LOG_TEMPLATES.finishSummary })
+    assert.equal(finished.data.reviewers[0].reviewerId, 'sol-1')
+    assert.deepEqual(finished.data.reviewers[0].rounds[0].findingIds, ['F1'])
+    assert.equal(finished.data.findings[0].classification, 'valid')
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true })
+  }
+})
 
 test('writes dated JSONL and derives reviewer overlap without inventing token usage', () => {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'review-run-log-'))

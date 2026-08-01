@@ -19,6 +19,68 @@ import { fileURLToPath } from 'node:url'
 
 export const SCHEMA_VERSION = 1
 
+export const LOG_TEMPLATES = Object.freeze({
+  configuration: Object.freeze({
+    requestedReviewerCount: 3,
+    reviewerCohortRequested: Object.freeze([
+      Object.freeze({ model: 'gpt-5.6-sol', count: 1 }),
+      Object.freeze({ model: 'gpt-5.6-terra', count: 1 }),
+      Object.freeze({ model: 'gpt-5.6-luna', count: 1 }),
+    ]),
+    reasoningRequested: 'high',
+    remediationRoundLimit: 3,
+    reviewBotLoopLimit: 8,
+  }),
+  events: Object.freeze({
+    targetIntegrated: Object.freeze({
+      event: 'target_integrated',
+      data: Object.freeze({
+        targetRef: '<target-remote>/<target-branch>',
+        targetSha: '<sha>',
+        method: 'already_current',
+      }),
+    }),
+    reviewerSessionStarted: Object.freeze({
+      event: 'reviewer_session_started',
+      data: Object.freeze({
+        reviewerId: 'sol-1',
+        launchMechanism: 'native',
+        sessionId: '<session-id>',
+        modelRequested: 'gpt-5.6-sol',
+        modelApplied: 'gpt-5.6-sol',
+        reasoningRequested: 'high',
+        reasoningApplied: 'high',
+      }),
+    }),
+    initialPass: Object.freeze({
+      event: 'reviewer_pass_completed',
+      data: Object.freeze({ reviewerId: 'sol-1', round: 1, findingIds: ['F1'], tokenUsage: null }),
+    }),
+    continuity: Object.freeze({
+      event: 'reviewer_continuity_verified',
+      data: Object.freeze({ reviewerId: 'sol-1', round: 1, verified: true, tokenUsage: null }),
+    }),
+    remediationPass: Object.freeze({
+      event: 'remediation_reviewer_pass_completed',
+      data: Object.freeze({ reviewerId: 'sol-1', round: 1, findingIds: [], tokenUsage: null }),
+    }),
+    findingResolved: Object.freeze({
+      event: 'finding_resolved',
+      data: Object.freeze({
+        findingId: 'F1',
+        classification: 'valid',
+        reportedBy: Object.freeze(['sol-1']),
+        action: 'fixed',
+      }),
+    }),
+  }),
+  finishSummary: Object.freeze({
+    status: 'complete',
+    githubReviewBots: Object.freeze([]),
+    reviewBotLoopCount: 0,
+  }),
+})
+
 export const PRICING_SNAPSHOT = Object.freeze({
   currency: 'USD',
   serviceTier: 'standard',
@@ -984,18 +1046,24 @@ const readDataOption = (options, label) => {
 }
 
 const help = `Usage:
+  review-run-log.mjs templates
   review-run-log.mjs start [--repo-root <path>] [--output-root <path>] [--data-json <object>]
   review-run-log.mjs append --log <path> --event <lower_snake_case> [--data-json <object>]
   review-run-log.mjs finish --log <path> [--collect-codex-usage] [--sessions-root <path>] [--data-json <summary>]
   review-run-log.mjs report --log <path>
 
 Use --data-file <path> instead of --data-json, or --data-file - to read JSON from stdin.
-Each command prints JSON. start prints logPath and runId; finish prints the derived metrics.`
+Each command prints JSON. templates prints canonical start, event, and finish payloads;
+start prints logPath and runId; finish prints the derived metrics.`
 
 const main = () => {
   const [command, ...args] = process.argv.slice(2)
   if (!command || command === '--help' || command === 'help') {
     process.stdout.write(`${help}\n`)
+    return
+  }
+  if (command === 'templates') {
+    process.stdout.write(`${JSON.stringify(LOG_TEMPLATES, null, 2)}\n`)
     return
   }
   const options = parseOptions(args)

@@ -1,5 +1,7 @@
 # Review Run Logging
 
+For ordinary runs, resolve this skill's directory and use `node <skill-dir>/scripts/review-run-log.mjs templates` instead of loading this reference. Use the details below to diagnose rejected records, extend telemetry, or interpret derived metrics.
+
 Write one append-only JSONL file per skill run under:
 
 ```text
