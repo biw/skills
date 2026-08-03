@@ -21,6 +21,14 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      - name: Reject development tests in skill payloads
+        run: |
+          test_files="$(find skills -type f \( -name '*.test.*' -o -name '*.spec.*' -o -path '*/__tests__/*' \) -print)"
+          if [ -n "$test_files" ]; then
+            echo "Development tests must live under tests/, not skills/."
+            printf '%s\n' "$test_files"
+            exit 1
+          fi
       - run: pnpm validate
       - run: pnpm skills add . --list
       - name: Smoke-test Codex install
