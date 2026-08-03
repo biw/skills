@@ -10,7 +10,7 @@ import {
   finishRun,
   startRun,
   validateFinishSummary,
-} from './review-run-log.mjs'
+} from '../../skills/review-fix-address-bots/scripts/review-run-log.mjs'
 
 const reviewerStart = (reviewerId, model) => ({
   event: 'reviewer_session_started',
