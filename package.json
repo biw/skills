@@ -6,11 +6,17 @@
   "type": "module",
   "packageManager": "pnpm@11.5.2",
   "scripts": {
+    "format": "oxfmt --write \"**/*.{js,mjs,cjs}\"",
+    "format:check": "oxfmt --check \"**/*.{js,mjs,cjs}\"",
+    "lint": "oxlint --deny-warnings scripts skills tests",
+    "lint:fix": "oxlint --fix scripts skills tests",
     "precommit": "pnpm validate",
     "skills": "skills",
-    "validate": "node scripts/validate-skills.mjs && node --test"
+    "validate": "pnpm lint && pnpm format:check && node scripts/validate-skills.mjs && node --test"
   },
   "devDependencies": {
+    "oxfmt": "^0.62.0",
+    "oxlint": "^1.77.0",
     "skills": "1.5.6",
     "yaml": "2.8.2"
   }
