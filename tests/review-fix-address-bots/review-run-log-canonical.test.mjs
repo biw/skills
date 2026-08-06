@@ -7,7 +7,9 @@ import test from 'node:test'
 import {
   appendEvent,
   canonicalSummaryFromEvents,
+  collectCodexCliSessionResult,
   finishRun,
+  recoverCodexCliReviewerResult,
   startRun,
   validateFinishSummary,
 } from '../../skills/review-fix-address-bots/scripts/review-run-log.mjs'
@@ -147,6 +149,168 @@ test('collectCodexUsage enriches the ledger-canonicalized reviewer records', () 
       [...reviewerIds].sort(),
     )
     assert.ok(record.data.reviewers.every((reviewer) => reviewer.sessionTokenUsage?.totalTokens === 55))
+  } finally {
+    rmSync(root, { force: true, recursive: true })
+  }
+})
+
+test('recovers a completed persistent CLI reviewer result after command output is lost', () => {
+  const root = mkdtempSync(join(tmpdir(), 'review-cli-recovery-'))
+  const repoRoot = join(root, 'repo')
+  const sessionsRoot = join(root, 'sessions')
+  const startedAt = '2026-08-05T21:40:54.664Z'
+  const sessionId = '019fd3e4-ef37-75d3-b79f-55c86957ec00'
+
+  try {
+    mkdirSync(repoRoot, { recursive: true })
+    const { logPath } = startRun({ outputRoot: root, repoRoot, timestamp: startedAt, runId: 'cli-recovery' })
+    appendEvent({
+      logPath,
+      event: 'reviewer_session_started',
+      timestamp: '2026-08-05T21:47:52.000Z',
+      data: {
+        launchMechanism: 'codex_cli',
+        modelApplied: 'gpt-5.6-luna',
+        modelRequested: 'gpt-5.6-luna',
+        reasoningApplied: 'high',
+        reasoningRequested: 'high',
+        reviewerId: 'luna-1',
+        sessionId,
+      },
+    })
+
+    const sessionDirectory = join(sessionsRoot, '2026', '08', '05')
+    mkdirSync(sessionDirectory, { recursive: true })
+    const records = [
+      {
+        timestamp: '2026-08-05T21:47:04.625Z',
+        type: 'session_meta',
+        payload: {
+          cwd: repoRoot,
+          id: sessionId,
+          model: 'gpt-5.6-luna',
+          source: 'exec',
+          timestamp: '2026-08-05T21:47:03.904Z',
+        },
+      },
+      {
+        type: 'turn_context',
+        payload: { effort: 'high', model: 'gpt-5.6-luna' },
+      },
+      { type: 'event_msg', payload: { type: 'task_started' } },
+      {
+        type: 'event_msg',
+        payload: { message: 'No findings.', phase: 'final_answer', type: 'agent_message' },
+      },
+      {
+        type: 'event_msg',
+        payload: {
+          completed_at: 1785966994,
+          duration_ms: 569456,
+          last_agent_message: 'No findings.',
+          type: 'task_complete',
+        },
+      },
+    ]
+    writeFileSync(
+      join(sessionDirectory, `rollout-${sessionId}.jsonl`),
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    )
+
+    const recovered = recoverCodexCliReviewerResult({
+      logPath,
+      sessionsRoot,
+      reviewerId: 'luna-1',
+      timestamp: '2026-08-05T22:00:00.000Z',
+    })
+    assert.deepEqual(recovered, {
+      completedAt: '2026-08-05T21:56:34.000Z',
+      controls: { model: 'gpt-5.6-luna', reasoning: 'high' },
+      durationMs: 569456,
+      lastAgentMessage: 'No findings.',
+      reviewerId: 'luna-1',
+      sessionId,
+      status: 'complete',
+      taskCompletedCount: 1,
+      taskStartedCount: 1,
+    })
+  } finally {
+    rmSync(root, { force: true, recursive: true })
+  }
+})
+
+test('does not recover a CLI result when its verified controls differ from the ledger', () => {
+  const root = mkdtempSync(join(tmpdir(), 'review-cli-control-mismatch-'))
+  const repoRoot = join(root, 'repo')
+  const sessionsRoot = join(root, 'sessions')
+  const startedAt = '2026-08-05T21:40:54.664Z'
+  const sessionId = 'luna-session'
+
+  try {
+    mkdirSync(repoRoot, { recursive: true })
+    const sessionDirectory = join(sessionsRoot, '2026', '08', '05')
+    mkdirSync(sessionDirectory, { recursive: true })
+    writeFileSync(
+      join(sessionDirectory, 'rollout-luna-session.jsonl'),
+      `${[
+        {
+          type: 'session_meta',
+          payload: { cwd: repoRoot, id: sessionId, model: 'gpt-5.6-luna', source: 'exec' },
+        },
+        { type: 'turn_context', payload: { effort: 'medium', model: 'gpt-5.6-luna' } },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n')}\n`,
+    )
+
+    const result = collectCodexCliSessionResult(
+      { modelApplied: 'gpt-5.6-luna', reasoningApplied: 'high', sessionId },
+      { endedAt: '2026-08-05T22:00:00.000Z', repoRoot, sessionsRoot, startedAt },
+    )
+    assert.equal(result.status, 'unavailable')
+    assert.equal(result.reason, 'persistent CLI session applied controls do not match the reviewer ledger')
+  } finally {
+    rmSync(root, { force: true, recursive: true })
+  }
+})
+
+test('reports a verified CLI session without a completed task as in progress', () => {
+  const root = mkdtempSync(join(tmpdir(), 'review-cli-in-progress-'))
+  const repoRoot = join(root, 'repo')
+  const sessionsRoot = join(root, 'sessions')
+  const startedAt = '2026-08-05T21:40:54.664Z'
+  const sessionId = 'luna-in-progress'
+
+  try {
+    mkdirSync(repoRoot, { recursive: true })
+    const sessionDirectory = join(sessionsRoot, '2026', '08', '05')
+    mkdirSync(sessionDirectory, { recursive: true })
+    writeFileSync(
+      join(sessionDirectory, 'rollout-luna-in-progress.jsonl'),
+      `${[
+        {
+          type: 'session_meta',
+          payload: { cwd: repoRoot, id: sessionId, model: 'gpt-5.6-luna', source: 'exec' },
+        },
+        { type: 'turn_context', payload: { effort: 'high', model: 'gpt-5.6-luna' } },
+        { type: 'event_msg', payload: { type: 'task_started' } },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n')}\n`,
+    )
+
+    const result = collectCodexCliSessionResult(
+      { modelApplied: 'gpt-5.6-luna', reasoningApplied: 'high', sessionId },
+      { endedAt: '2026-08-05T22:00:00.000Z', repoRoot, sessionsRoot, startedAt },
+    )
+    assert.deepEqual(result, {
+      controls: { model: 'gpt-5.6-luna', reasoning: 'high' },
+      reason: 'persistent CLI session has no completed task with a terminal response',
+      sessionId,
+      status: 'in_progress',
+      taskCompletedCount: 0,
+      taskStartedCount: 1,
+    })
   } finally {
     rmSync(root, { force: true, recursive: true })
   }

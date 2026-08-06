@@ -284,6 +284,197 @@ const codexSessionUsage = (path) => {
 
 const expectedAgentName = (reviewerId) => reviewerId.replaceAll('-', '_')
 
+const readJsonlRecords = (path) => {
+  const records = []
+  for (const [index, line] of readFileSync(path, 'utf8').split('\n').entries()) {
+    if (!line) continue
+    try {
+      records.push(JSON.parse(line))
+    } catch {
+      return { records, malformedLine: index + 1 }
+    }
+  }
+  return { records, malformedLine: null }
+}
+
+const sessionIdFromMeta = (record) => record?.payload?.id || record?.payload?.session_id || null
+
+const cliSessionCandidate = (path) => {
+  const first = readFirstJsonLine(path)
+  if (first?.type !== 'session_meta' || first.payload?.source !== 'exec') return null
+  return {
+    path,
+    cwd: first.payload.cwd || null,
+    model: first.payload.model || null,
+    sessionId: sessionIdFromMeta(first),
+    timestamp: first.payload.timestamp || first.timestamp || null,
+  }
+}
+
+const appliedControlsForCliSession = (records, candidate) => {
+  const context = records.find((record) => record.type === 'turn_context')?.payload || {}
+  return {
+    model: context.model || candidate.model || null,
+    reasoning: context.effort || context.collaboration_mode?.settings?.reasoning_effort || null,
+  }
+}
+
+/**
+ * Recovers a terminal response from an exact persistent `codex exec` session.
+ *
+ * This is deliberately separate from native usage collection: a CLI session is
+ * identified by its captured thread ID, not by subagent metadata. The returned
+ * response is for the parent to consume; callers must not add it to the JSONL
+ * telemetry log because review bodies are intentionally not logged.
+ */
+export const collectCodexCliSessionResult = (
+  { sessionId, modelApplied, reasoningApplied } = {},
+  {
+    sessionsRoot = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions'),
+    startedAt,
+    endedAt = new Date().toISOString(),
+    repoRoot,
+  } = {},
+) => {
+  if (!sessionId || !startedAt || !repoRoot) {
+    return {
+      status: 'unavailable',
+      reason: 'sessionId, startedAt, and repoRoot are required',
+    }
+  }
+
+  const candidates = sessionFilesForWindow(resolve(expandHome(sessionsRoot)), startedAt, endedAt)
+    .map(cliSessionCandidate)
+    .filter(Boolean)
+    .filter(
+      (candidate) =>
+        candidate.sessionId === sessionId && resolve(candidate.cwd || '/') === resolve(repoRoot),
+    )
+
+  if (candidates.length !== 1) {
+    return {
+      status: 'unavailable',
+      reason:
+        candidates.length === 0
+          ? 'no exact persistent CLI session matched the reviewer session ID and repository'
+          : 'multiple persistent CLI sessions matched the reviewer session ID and repository',
+      candidateCount: candidates.length,
+    }
+  }
+
+  const candidate = candidates[0]
+  const { records, malformedLine } = readJsonlRecords(candidate.path)
+  if (malformedLine !== null) {
+    return {
+      status: 'unavailable',
+      reason: `persistent CLI session contains malformed JSON at line ${malformedLine}`,
+      sessionId,
+    }
+  }
+
+  const controls = appliedControlsForCliSession(records, candidate)
+  if (
+    (modelApplied && controls.model !== modelApplied) ||
+    (reasoningApplied && controls.reasoning !== reasoningApplied)
+  ) {
+    return {
+      status: 'unavailable',
+      reason: 'persistent CLI session applied controls do not match the reviewer ledger',
+      sessionId,
+      controls,
+    }
+  }
+
+  const taskStarts = records.filter(
+    (record) => record.type === 'event_msg' && record.payload?.type === 'task_started',
+  )
+  const taskCompletions = records.filter(
+    (record) => record.type === 'event_msg' && record.payload?.type === 'task_complete',
+  )
+  const terminal = taskCompletions.at(-1)?.payload
+  const lastAgentMessage = terminal?.last_agent_message
+
+  if (!terminal || typeof lastAgentMessage !== 'string' || lastAgentMessage.length === 0) {
+    return {
+      status: 'in_progress',
+      reason: 'persistent CLI session has no completed task with a terminal response',
+      sessionId,
+      controls,
+      taskStartedCount: taskStarts.length,
+      taskCompletedCount: taskCompletions.length,
+    }
+  }
+
+  const hasMatchingFinalAnswer = records.some(
+    (record) =>
+      record.type === 'event_msg' &&
+      record.payload?.type === 'agent_message' &&
+      record.payload?.phase === 'final_answer' &&
+      record.payload?.message === lastAgentMessage,
+  )
+  if (!hasMatchingFinalAnswer) {
+    return {
+      status: 'unavailable',
+      reason: 'persistent CLI session terminal response does not have a matching final-answer event',
+      sessionId,
+      controls,
+      taskStartedCount: taskStarts.length,
+      taskCompletedCount: taskCompletions.length,
+    }
+  }
+
+  return {
+    status: 'complete',
+    sessionId,
+    controls,
+    taskStartedCount: taskStarts.length,
+    taskCompletedCount: taskCompletions.length,
+    completedAt: terminal.completed_at ? new Date(terminal.completed_at * 1000).toISOString() : null,
+    durationMs: typeof terminal.duration_ms === 'number' ? terminal.duration_ms : null,
+    lastAgentMessage,
+  }
+}
+
+export const recoverCodexCliReviewerResult = ({ logPath, reviewerId, sessionsRoot, timestamp } = {}) => {
+  if (!logPath) fail('logPath is required')
+  if (!reviewerId) fail('reviewerId is required')
+  const { events } = runIdentity(logPath)
+  const starts = events.filter(
+    (event) =>
+      event.event === 'reviewer_session_started' &&
+      canonicalReviewerId(event.data) === reviewerId &&
+      event.data?.launchMechanism === 'codex_cli',
+  )
+  if (starts.length !== 1) {
+    return {
+      status: 'unavailable',
+      reason:
+        starts.length === 0
+          ? 'no codex_cli reviewer session start exists for this reviewer'
+          : 'multiple codex_cli reviewer session starts exist for this reviewer',
+      reviewerId,
+    }
+  }
+
+  const data = starts[0].data
+  return {
+    reviewerId,
+    ...collectCodexCliSessionResult(
+      {
+        sessionId: data.sessionId,
+        modelApplied: data.modelApplied,
+        reasoningApplied: data.reasoningApplied,
+      },
+      {
+        sessionsRoot,
+        startedAt: events[0].timestamp,
+        endedAt: timestamp || new Date().toISOString(),
+        repoRoot: events[0].repo?.root,
+      },
+    ),
+  }
+}
+
 export const collectCodexSessionUsage = (
   summary,
   {
@@ -1049,6 +1240,7 @@ const help = `Usage:
   review-run-log.mjs templates
   review-run-log.mjs start [--repo-root <path>] [--output-root <path>] [--data-json <object>]
   review-run-log.mjs append --log <path> --event <lower_snake_case> [--data-json <object>]
+  review-run-log.mjs recover-cli-session --log <path> --reviewer-id <id> [--sessions-root <path>]
   review-run-log.mjs finish --log <path> [--collect-codex-usage] [--sessions-root <path>] [--data-json <summary>]
   review-run-log.mjs report --log <path>
 
@@ -1081,6 +1273,15 @@ const main = () => {
       logPath: options.log,
       event: options.event,
       data: readDataOption(options, 'data'),
+    })
+    process.stdout.write(`${JSON.stringify(result)}\n`)
+    return
+  }
+  if (command === 'recover-cli-session') {
+    const result = recoverCodexCliReviewerResult({
+      logPath: options.log,
+      reviewerId: options['reviewer-id'],
+      sessionsRoot: options['sessions-root'],
     })
     process.stdout.write(`${JSON.stringify(result)}\n`)
     return
