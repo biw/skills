@@ -133,7 +133,9 @@ function validateSkill(filePath, metadata) {
       `${displayPath}: frontmatter.description must be ${maxDescriptionLength} characters or fewer for Claude.ai compatibility.`,
     );
   } else if (metadata.description.length < 40) {
-    warnings.push(`${displayPath}: description is very short; include what the skill does and when to use it.`);
+    warnings.push(
+      `${displayPath}: description is very short; include what the skill does and when to use it.`,
+    );
   }
 
   if (metadata.compatibility !== undefined) {
@@ -150,7 +152,9 @@ function validateSkill(filePath, metadata) {
 
   if (
     metadata.metadata !== undefined &&
-    (!metadata.metadata || typeof metadata.metadata !== "object" || Array.isArray(metadata.metadata))
+    (!metadata.metadata ||
+      typeof metadata.metadata !== "object" ||
+      Array.isArray(metadata.metadata))
   ) {
     errors.push(`${displayPath}: metadata must be a YAML mapping when present.`);
   }
@@ -186,7 +190,11 @@ async function validateOpenAIConfig(skillPath) {
   }
 
   const interfaceMetadata = metadata.interface;
-  if (!interfaceMetadata || typeof interfaceMetadata !== "object" || Array.isArray(interfaceMetadata)) {
+  if (
+    !interfaceMetadata ||
+    typeof interfaceMetadata !== "object" ||
+    Array.isArray(interfaceMetadata)
+  ) {
     errors.push(`${displayPath}: interface must be a YAML mapping.`);
     return;
   }
@@ -204,7 +212,9 @@ async function validateOpenAIConfig(skillPath) {
       metadata.policy.allow_implicit_invocation !== undefined &&
       typeof metadata.policy.allow_implicit_invocation !== "boolean"
     ) {
-      errors.push(`${displayPath}: policy.allow_implicit_invocation must be a boolean when present.`);
+      errors.push(
+        `${displayPath}: policy.allow_implicit_invocation must be a boolean when present.`,
+      );
     }
   }
 }
