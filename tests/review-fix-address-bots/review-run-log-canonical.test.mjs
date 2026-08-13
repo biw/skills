@@ -870,7 +870,7 @@ test("launches a CLI reviewer with a captured thread and verified controls", asy
     const fakeCodex = join(root, "fake-codex");
     writeFileSync(
       fakeCodex,
-      `#!/bin/sh\necho '{"type":"thread.started","thread_id":"${sessionId}"}'\n`,
+      `#!/bin/sh\necho '{"type":"thread.started","thread_id":"${sessionId}"}'\ncat >/dev/null\n`,
     );
     chmodSync(fakeCodex, 0o755);
     writeFileSync(promptFile, "read-only review packet\n");
