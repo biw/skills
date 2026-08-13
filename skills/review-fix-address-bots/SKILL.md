@@ -13,6 +13,7 @@ Execute these phases in order. The primary agent alone owns judgment, edits, com
 - Include this boundary in every reviewer prompt: “Operate in read-only mode. You are advisory only. Never modify the workspace or Git/PR state, and never commit or push. Return findings and critique to the primary agent, who makes the final decision.”
 - Preserve unrelated user changes. Never use reset, automatic stashing, broad staging, history rewriting, or checkpoint commits to clear a dirty tree.
 - Logging is observational. If it fails, report the failure and continue the safe workflow; never change code, judgment, Git/PR state, or loop limits for telemetry.
+- Treat `scripts/review-run-log.mjs` as an opaque executable. Never read its source during this workflow. Invoke its documented commands and use `templates`, `--help`, and the Markdown references; inspect or change its source only when the user explicitly asks to debug or modify the helper.
 
 ## 1. Prepare the integrated target
 
@@ -24,15 +25,95 @@ Execute these phases in order. The primary agent alone owns judgment, edits, com
 6. Do not let pre-existing staged changes enter a merge commit. If dirty work makes integration unsafe, stop. Resolve conflicts from both branches' intent, surrounding code, and tests; request input for material product, UX, public API, or architecture choices. The integrated tree, conflict resolutions included, is the review target. If integration happens after review starts, invalidate every report and rerun the cohort.
 7. Before the first push, resolve authority to create a PR if none exists and the bot phase requires one. Stop before the remote mutation when authority is absent.
 
+## Reviewer sessions
+
+Use the reviewer count, model mix, and reasoning levels explicitly requested by the user. Otherwise use this default cohort for every initial and remediation pass:
+
+| Reviewer ID | Model | Reasoning |
+| --- | --- | --- |
+| `sol-1` | `gpt-5.6-sol` | `high` |
+| `terra-1` | `gpt-5.6-terra` | `high` |
+| `luna-1` | `gpt-5.6-luna` | `high` |
+| `luna-2` | `gpt-5.6-luna` | `high` |
+| `luna-3` | `gpt-5.6-luna` | `high` |
+
+For a count from one through five, use that order. For another explicit mix, assign stable IDs from model tier plus one-based ordinal. Ask for a mix when a count above five is otherwise underspecified. Normalize native task names from `sol-1` to `sol_1` for deterministic discovery. Keep the raw review prompt, target fingerprint, role boundary, reasoning, and service tier identical across the cohort. Queue over concurrency limits without editing the target.
+
+### Packet
+
+Do not send this skill, any reference, helper commands, run-log details, or the primary conversation to a reviewer. Give every reviewer the same self-contained packet containing only the review task: raw user prompt (or default criteria), target SHA and workspace fingerprint, relevant scope/diff or paths, conflict summary if applicable, read-only boundary, and required finding format (file, minimal line range, severity, scenario, rationale). Exclude other reviewers' findings, the primary's conclusions, remediation decisions, and telemetry instructions.
+
+### Launch and verify
+
+Prefer a native subagent only when it exposes the exact model, reasoning level, and a stable resumable handle. Launch every initial reviewer with `fork_turns: "none"` and its self-contained packet; do not fork the primary conversation. Verify applied settings from runtime evidence, not requested arguments alone.
+
+`fork_turns: "none"` does not make an unavailable native model available. If native launch omits an assigned model such as Luna, do not silently substitute or call it unavailable: use the persistent CLI fallback below. If the native schema hides routing fields, check whether the user already configured this fresh-session-only workaround; never change it without explicit authorization:
+
+```toml
+[features.multi_agent_v2]
+hide_spawn_agent_metadata = false
+tool_namespace = "agents"
+```
+
+Use the helper for every CLI fallback; it captures the thread ID, keeps raw output in gitignored `.context`, and verifies persisted controls:
+
+```bash
+node scripts/review-run-log.mjs launch-cli-reviewer \
+  --log "$REVIEW_RUN_LOG" \
+  --reviewer-id "$REVIEWER_ID" \
+  --model "$REVIEWER_MODEL" \
+  --reasoning "$REVIEWER_REASONING" \
+  --prompt-file ".context/$REVIEWER_ID.packet.txt" \
+  --output-file ".context/$REVIEWER_ID.initial.jsonl"
+```
+
+Launch concurrently where the runtime permits. Never use `--ephemeral`. A failed control verification blocks editing and finishes `blocked`; never treat flags alone as verification. Record `reviewer_session_started` as soon as a handle is available and `reviewer_session_controls_verified` only after persisted verification. Record completed-task `durationMs` only when the runtime exposes it.
+
+### Observe, recover, and clear stalled workers
+
+After each bounded wait (30 seconds by default), run the cohort watcher. It is a maximum polling interval, not a runtime floor: handle completions immediately.
+
+```bash
+node scripts/review-run-log.mjs inspect-reviewers \
+  --log "$REVIEW_RUN_LOG" \
+  --stale-after-ms 120000 \
+  --soft-deadline-ms 600000 \
+  --hard-deadline-ms 1200000 \
+  --record
+```
+
+The soft deadline is a warning. The hard deadline begins at the current `task_started` (or session start when absent). Before classifying any native or CLI reviewer as failed, inspect its exact persisted session. `active`, `stalled`, and one `in_progress` result are not failures. The watcher does not interrupt workers.
+
+For a hard-exceeded native reviewer, immediately inspect the exact native session once more. If it remains non-terminal, call `agents.interrupt_agent` with the inspection's `nativeHandle`, never its persisted `sessionId`; confirm with `agents.list_agents` that it stopped; then append `reviewer_session_cancelled` with reviewer ID, persisted session ID, native handle, phase, reason, and deadline. Never use a broad kill, interrupt another reviewer, or probe an initial review with a follow-up. One fresh initial retry may use a distinct task name such as `sol_1_retry_1`, but retains reviewer ID `sol-1`; a second hard deadline finishes `partial` or `blocked`. A hard-exceeded continuity session follows the full-cohort restart rule after clearing the exact handle. A CLI session never consumes a native slot; end only its exact runtime wrapper when exposed, otherwise finish partial with its telemetry.
+
+For a missing or unreadable CLI result, recover before retrying:
+
+```bash
+node scripts/review-run-log.mjs recover-cli-session \
+  --log "$REVIEW_RUN_LOG" \
+  --reviewer-id "$REVIEWER_ID"
+```
+
+The recovery must match exactly one captured thread, repository, applied controls, and completed final-answer event. Use its recovered answer but never log the review body. For `in_progress`, inspect the exact CLI session; for native UI lag, inspect the exact native session:
+
+```bash
+node scripts/review-run-log.mjs inspect-cli-session --log "$REVIEW_RUN_LOG" --reviewer-id "$REVIEWER_ID" --stale-after-ms 120000
+node scripts/review-run-log.mjs inspect-native-session --log "$REVIEW_RUN_LOG" --reviewer-id "$REVIEWER_ID" --stale-after-ms 120000
+```
+
+CLI retries are allowed only after inspection says `unavailable`. Native retries additionally follow the hard-deadline cleanup above. Keep raw results outside the run log; record only concise observations and outcomes.
+
+### Preserve session continuity
+
+Before fixes, create a gitignored `.context/reviewer-sessions.json` ledger with stable reviewer ID, requested/applied controls, launch mechanism, native handle or CLI thread ID, initial fingerprint, and continuity state. Never store credentials, prompts, or review bodies. Before editing, resume every initial session with its original controls and read-only boundary; require only `SESSION_CONTINUITY_OK`. Record a completed-task duration when available. If any handshake fails, discard every report and restart the full cohort once against the unchanged target; a second failure blocks editing. Remediation uses only these verified handles.
+
 ## 2. Run independent initial reviews
 
-Read [references/reviewer-sessions.md](references/reviewer-sessions.md) before launching. It defines cohort defaults, exact model/reasoning verification, isolated native and CLI launch patterns, stable IDs, persistent handles, and the continuity protocol.
-
-1. Resolve the user-requested cohort or that reference's default and keep it fixed. Stop if the runtime cannot verify an exact requested/applied model, reasoning level, or persistent handle; never silently substitute.
+1. Resolve the user-requested cohort or the default above and keep it fixed. Stop if the runtime cannot verify an exact requested/applied model, reasoning level, or persistent handle; never silently substitute.
 2. Give each reviewer the same self-contained raw prompt, integrated target SHA and fingerprint, conflict summary, and role boundary. Do not expose another reviewer's findings or primary-agent conclusions. Require file, minimal line range, severity, scenario, and rationale for every finding.
-3. Fingerprint `HEAD`, staged/unstaged diffs, status, and relevant untracked contents. Keep the target unchanged through all initial reports and continuity checks. Launch concurrently where possible and queue the rest unchanged. Before classifying a persistent CLI invocation with lost or unreadable output as failed, run the recovery verification in `reviewer-sessions.md`; retry once with the same identity and controls only if that verification cannot recover a completed result.
-4. Log `reviewer_session_started` and every completed or failed pass using the helper's canonical fields. Record persistent Codex CLI launches as `launchMechanism: "codex_cli"`. Use stable reviewer IDs and, after deduplication, stable finding IDs. Record real token usage only when exposed; otherwise use `null`.
-5. Store non-secret handles and controls in a gitignored `.context` ledger. Before editing, resume every exact session with its original controls and require only `SESSION_CONTINUITY_OK`; log the result. If any fails, discard all reports and restart the full cohort once against the unchanged target. A second failure blocks editing.
+3. Fingerprint `HEAD`, staged/unstaged diffs, status, and relevant untracked contents. Keep the target unchanged through all initial reports and continuity checks. Launch concurrently where possible and queue the rest unchanged. Apply the launch, watchdog, recovery, and hard-deadline cleanup rules above.
+4. Log each launch, control verification, observation, cancellation, and completed or failed pass using the canonical fields above. Use stable reviewer and finding IDs. Record actual token usage and `durationMs` only when exposed.
+5. Apply the continuity protocol above before editing.
 6. Verify the target fingerprint after the handshakes. On unexpected mutation, inspect ownership and rerun the full cohort once against a stable target. Repeated instability is a blocker.
 
 ## 3. Verify findings and fix
@@ -65,13 +146,12 @@ Resume every continuity-verified session with its original controls and read-onl
 
 ## Finish and report
 
-Always attempt `finish`, even for a blocked/failed run, using event-derived reviewers/findings plus actual bot, validation, status, and SHA outcomes. For native Codex reviewers use `--collect-codex-usage`. Generate the usage section with `report`; do not manually calculate or reformat it. Treat model comparisons as one-run observations.
+Always attempt `finish`, even for a blocked/failed run, using event-derived reviewers/findings plus actual bot, validation, status, and SHA outcomes. Use `partial`, `blocked`, or `failed` instead of `complete` when the cohort cannot finish. For native and CLI Codex reviewers use `--collect-codex-usage`; collection is per reviewer, so completed sessions still contribute real tokens, cost, and duration when another worker is unavailable. Do not report while any reviewer lacks both tokens and an exact duration. Run `diagnose-codex-usage`, resolve its per-reviewer session/ledger cause (including an allowed relaunch when needed), then run `finish --collect-codex-usage` again. Generate the usage section with `report` only after that gate passes; do not manually calculate or reformat it. Treat model comparisons as one-run observations.
 
-Report the applied cohort/controls, persistent sessions and continuity/retries, log path and derived invocation/round/usage coverage, shared/unique findings and model comparison, base SHA/integration/conflicts, all finding dispositions, remediation rounds and disagreements, validation per push, commits/PR, bot-loop outcomes, and remaining blockers. End with the helper-generated `### Reviewer token usage` section copied verbatim, with `Estimated cost` immediately after `Total`; put nothing after it.
+Report the applied cohort/controls, persistent sessions and continuity/retries, log path and derived invocation/round/usage coverage, shared/unique findings and model comparison, base SHA/integration/conflicts, all finding dispositions, remediation rounds and disagreements, validation per push, commits/PR, bot-loop outcomes, and remaining blockers. `report` refuses an incomplete-telemetry cohort, so append its table verbatim only after it succeeds. Do not add pricing or telemetry caveats. Keep `Estimated cost` immediately after `Total` and `Agent time` last; put nothing after it.
 
 ## Resources
 
-- [references/reviewer-sessions.md](references/reviewer-sessions.md): cohort and persistent-session mechanics.
 - [references/review-guidelines.md](references/review-guidelines.md): default review criteria.
 - [references/run-logging.md](references/run-logging.md): logger troubleshooting, extension, and metric semantics.
 - `scripts/review-run-log.mjs`: canonical payloads, append-only log, metrics, and final report.

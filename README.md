@@ -20,7 +20,7 @@ npx skills add biw/skills
 - [`conductor-setup`](./skills/conductor-setup/SKILL.md): configure `.conductor/settings.toml`, migrate legacy `conductor.json`, and set up local/cloud Conductor workspace scripts; invoke it as `$conductor-setup` in Codex.
 - [`detailed-pr-description`](./skills/detailed-pr-description/SKILL.md): assess test coverage or draft/update review-ready GitHub PR descriptions with change context, risks, follow-up work, and focused code references.
 - [`electron-flamegraph`](./skills/electron-flamegraph/SKILL.md): profile Electron main-process CPU usage and analyze `.cpuprofile` files.
-- [`review-fix-address-bots`](./skills/review-fix-address-bots/SKILL.md): compare three persistent GPT-5.6 Sol, Terra, and Luna reviews by default (or a requested cohort), resolve findings through bounded critique, and close GitHub review-bot feedback loops.
+- [`review-fix-address-bots`](./skills/review-fix-address-bots/SKILL.md): compare five persistent GPT-5.6 reviews by default: one Sol, one Terra, and three Luna (or a requested cohort); resolve findings through bounded critique and close GitHub review-bot feedback loops.
 - [`setup-cloudflare-pr-previews`](./skills/setup-cloudflare-pr-previews/SKILL.md): set up, audit, or repair Cloudflare Workers PR previews with aliased URLs, branch-isolated D1 databases, migrations, binding injection, stable environments, and PR-close cleanup.
 
 ## License

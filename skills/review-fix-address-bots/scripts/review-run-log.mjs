@@ -14,20 +14,23 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const SCHEMA_VERSION = 1;
 
 export const LOG_TEMPLATES = Object.freeze({
   configuration: Object.freeze({
-    requestedReviewerCount: 3,
+    requestedReviewerCount: 5,
     reviewerCohortRequested: Object.freeze([
       Object.freeze({ model: "gpt-5.6-sol", count: 1 }),
       Object.freeze({ model: "gpt-5.6-terra", count: 1 }),
-      Object.freeze({ model: "gpt-5.6-luna", count: 1 }),
+      Object.freeze({ model: "gpt-5.6-luna", count: 3 }),
     ]),
     reasoningRequested: "high",
+    watcherIntervalMs: 30_000,
+    softReviewerDeadlineMs: 600_000,
+    hardReviewerDeadlineMs: 1_200_000,
     remediationRoundLimit: 3,
     reviewBotLoopLimit: 8,
   }),
@@ -52,9 +55,46 @@ export const LOG_TEMPLATES = Object.freeze({
         reasoningApplied: "high",
       }),
     }),
+    reviewerSessionControlsVerified: Object.freeze({
+      event: "reviewer_session_controls_verified",
+      data: Object.freeze({
+        reviewerId: "luna-1",
+        sessionId: "<session-id>",
+        modelApplied: "gpt-5.6-luna",
+        reasoningApplied: "high",
+      }),
+    }),
+    reviewerSessionObserved: Object.freeze({
+      event: "reviewer_session_observed",
+      data: Object.freeze({
+        reviewerId: "luna-1",
+        lifecycle: "active",
+        lastActivityAt: "<timestamp>",
+        quietForMs: 0,
+      }),
+    }),
+    reviewerSessionCancelled: Object.freeze({
+      event: "reviewer_session_cancelled",
+      data: Object.freeze({
+        reviewerId: "sol-1",
+        sessionId: "<persisted-session-id>",
+        nativeHandle: "/root/sol_1",
+        phase: "initial",
+        reason: "native reviewer exceeded the hard deadline",
+        deadlineMs: 1_200_000,
+      }),
+    }),
     initialPass: Object.freeze({
       event: "reviewer_pass_completed",
       data: Object.freeze({ reviewerId: "sol-1", round: 1, findingIds: ["F1"], tokenUsage: null }),
+    }),
+    initialPassFailed: Object.freeze({
+      event: "reviewer_pass_failed",
+      data: Object.freeze({
+        reviewerId: "luna-1",
+        phase: "initial",
+        reason: "persistent CLI session unavailable after bounded polling",
+      }),
     }),
     continuity: Object.freeze({
       event: "reviewer_continuity_verified",
@@ -170,7 +210,6 @@ const skillFingerprint = () => {
     "SKILL.md",
     "references/review-guidelines.md",
     "references/run-logging.md",
-    "references/reviewer-sessions.md",
     "scripts/review-run-log.mjs",
   ]) {
     hash.update(relativePath);
@@ -260,6 +299,8 @@ const codexSessionUsage = (path) => {
   let totalTokenUsage = null;
   let invocationCount = 0;
   let completedInvocationCount = 0;
+  let completedDurationCount = 0;
+  let durationMs = 0;
   for (const line of readFileSync(path, "utf8").split("\n")) {
     if (!line) continue;
     let record;
@@ -270,7 +311,17 @@ const codexSessionUsage = (path) => {
     }
     if (record.type !== "event_msg") continue;
     if (record.payload?.type === "task_started") invocationCount += 1;
-    if (record.payload?.type === "task_complete") completedInvocationCount += 1;
+    if (record.payload?.type === "task_complete") {
+      completedInvocationCount += 1;
+      if (
+        typeof record.payload.duration_ms === "number" &&
+        Number.isFinite(record.payload.duration_ms) &&
+        record.payload.duration_ms >= 0
+      ) {
+        completedDurationCount += 1;
+        durationMs += record.payload.duration_ms;
+      }
+    }
     if (record.payload?.type === "token_count" && record.payload.info?.total_token_usage) {
       totalTokenUsage = record.payload.info.total_token_usage;
     }
@@ -278,11 +329,20 @@ const codexSessionUsage = (path) => {
   return {
     invocationCount,
     completedInvocationCount,
+    durationMs: completedDurationCount === completedInvocationCount ? durationMs : null,
     tokenUsage: tokenUsageFromCodex(totalTokenUsage),
   };
 };
 
 const expectedAgentName = (reviewerId) => reviewerId.replaceAll("-", "_");
+
+const nativeCandidateMatchesReviewer = (candidate, reviewer, index = 0) => {
+  const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`;
+  const sessionHandle = reviewer.sessionId || reviewer.sessionIdentifier;
+  if (sessionHandle)
+    return candidate.sessionId === sessionHandle || candidate.agentPath === sessionHandle;
+  return candidate.agentName === expectedAgentName(reviewerId);
+};
 
 const readJsonlRecords = (path) => {
   const records = [];
@@ -311,7 +371,24 @@ const cliSessionCandidate = (path) => {
   };
 };
 
-const appliedControlsForCliSession = (records, candidate) => {
+const nativeSessionCandidate = (path) => {
+  const first = readFirstJsonLine(path);
+  const spawn = first?.payload?.source?.subagent?.thread_spawn;
+  if (first?.type !== "session_meta" || !spawn) return null;
+  const agentPath = spawn.agent_path || first.payload.agent_path || "";
+  return {
+    path,
+    cwd: first.payload.cwd || null,
+    model: first.payload.model || null,
+    sessionId: sessionIdFromMeta(first),
+    parentThreadId: spawn.parent_thread_id || first.payload.parent_thread_id || null,
+    agentPath,
+    agentName: basename(agentPath),
+    timestamp: first.payload.timestamp || first.timestamp || null,
+  };
+};
+
+const appliedControlsForSession = (records, candidate) => {
   const context = records.find((record) => record.type === "turn_context")?.payload || {};
   return {
     model: context.model || candidate.model || null,
@@ -319,15 +396,7 @@ const appliedControlsForCliSession = (records, candidate) => {
   };
 };
 
-/**
- * Recovers a terminal response from an exact persistent `codex exec` session.
- *
- * This is deliberately separate from native usage collection: a CLI session is
- * identified by its captured thread ID, not by subagent metadata. The returned
- * response is for the parent to consume; callers must not add it to the JSONL
- * telemetry log because review bodies are intentionally not logged.
- */
-export const collectCodexCliSessionResult = (
+const exactCliSessionData = (
   { sessionId, modelApplied, reasoningApplied } = {},
   {
     sessionsRoot = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions"),
@@ -372,7 +441,7 @@ export const collectCodexCliSessionResult = (
     };
   }
 
-  const controls = appliedControlsForCliSession(records, candidate);
+  const controls = appliedControlsForSession(records, candidate);
   if (
     (modelApplied && controls.model !== modelApplied) ||
     (reasoningApplied && controls.reasoning !== reasoningApplied)
@@ -385,19 +454,173 @@ export const collectCodexCliSessionResult = (
     };
   }
 
+  return { status: "available", candidate, controls, records, sessionId };
+};
+
+const exactNativeSessionData = (
+  { sessionId, reviewerId, modelApplied, reasoningApplied } = {},
+  {
+    sessionsRoot = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions"),
+    startedAt,
+    endedAt = new Date().toISOString(),
+    repoRoot,
+  } = {},
+) => {
+  if (!reviewerId || !startedAt || !repoRoot) {
+    return {
+      status: "unavailable",
+      reason: "reviewerId, startedAt, and repoRoot are required",
+    };
+  }
+
+  const startTime = new Date(startedAt).getTime();
+  const endTime = new Date(endedAt).getTime();
+  const candidates = sessionFilesForWindow(resolve(expandHome(sessionsRoot)), startedAt, endedAt)
+    .map(nativeSessionCandidate)
+    .filter(Boolean)
+    .filter((candidate) => {
+      const timestamp = new Date(candidate.timestamp).getTime();
+      const matchesHandle =
+        sessionId && (candidate.sessionId === sessionId || candidate.agentPath === sessionId);
+      return (
+        (matchesHandle || (!sessionId && candidate.agentName === expectedAgentName(reviewerId))) &&
+        resolve(candidate.cwd || "/") === resolve(repoRoot) &&
+        timestamp >= startTime &&
+        timestamp <= endTime
+      );
+    });
+
+  if (candidates.length !== 1) {
+    return {
+      status: "unavailable",
+      reason:
+        candidates.length === 0
+          ? "no exact native reviewer session matched the reviewer handle and repository"
+          : "multiple native reviewer sessions matched the reviewer handle and repository",
+      candidateCount: candidates.length,
+    };
+  }
+
+  const candidate = candidates[0];
+  const { records, malformedLine } = readJsonlRecords(candidate.path);
+  if (malformedLine !== null) {
+    return {
+      status: "unavailable",
+      reason: `native reviewer session contains malformed JSON at line ${malformedLine}`,
+      sessionId: candidate.sessionId,
+    };
+  }
+
+  const controls = appliedControlsForSession(records, candidate);
+  if (
+    (modelApplied && controls.model !== modelApplied) ||
+    (reasoningApplied && controls.reasoning !== reasoningApplied)
+  ) {
+    return {
+      status: "unavailable",
+      reason: "native reviewer session applied controls do not match the reviewer ledger",
+      sessionId: candidate.sessionId,
+      controls,
+    };
+  }
+
+  return { status: "available", candidate, controls, records, sessionId: candidate.sessionId };
+};
+
+const timestampForRecord = (record) => {
+  const value = record?.timestamp || record?.payload?.timestamp || null;
+  return value && Number.isFinite(new Date(value).getTime()) ? new Date(value).toISOString() : null;
+};
+
+const terminalFailureFor = (records) =>
+  [...records].reverse().find((record) => {
+    const type = record?.payload?.type || record?.type || "";
+    return (
+      typeof record?.payload?.error === "string" ||
+      /(?:^|_)(?:error|failed|failure|aborted|cancelled)(?:$|_)/i.test(type)
+    );
+  }) || null;
+
+const eventDescriptor = (record) =>
+  record
+    ? {
+        recordedAt: timestampForRecord(record),
+        recordType: record.type || null,
+        eventType: record.payload?.type || null,
+      }
+    : null;
+
+const latestReviewerSessionStart = (events, reviewerId, launchMechanism) =>
+  [...events]
+    .reverse()
+    .find(
+      (event) =>
+        event.event === "reviewer_session_started" &&
+        canonicalReviewerId(event.data) === reviewerId &&
+        event.data?.launchMechanism === launchMechanism,
+    ) || null;
+
+const terminalResultFromSession = ({ sessionId, controls, records, sessionLabel }) => {
   const taskStarts = records.filter(
     (record) => record.type === "event_msg" && record.payload?.type === "task_started",
   );
   const taskCompletions = records.filter(
     (record) => record.type === "event_msg" && record.payload?.type === "task_complete",
   );
+  if (taskCompletions.length > taskStarts.length) {
+    return {
+      status: "unavailable",
+      reason: `${sessionLabel} has more completed tasks than task starts`,
+      sessionId,
+      controls,
+      taskStartedCount: taskStarts.length,
+      taskCompletedCount: taskCompletions.length,
+    };
+  }
+  if (taskStarts.length > taskCompletions.length) {
+    const lastTaskStartIndex = records.findLastIndex(
+      (record) => record.type === "event_msg" && record.payload?.type === "task_started",
+    );
+    const failure = terminalFailureFor(records.slice(lastTaskStartIndex));
+    if (failure) {
+      return {
+        status: "unavailable",
+        reason: `${sessionLabel} recorded a terminal failure before task completion`,
+        sessionId,
+        controls,
+        taskStartedCount: taskStarts.length,
+        taskCompletedCount: taskCompletions.length,
+        terminalFailure: eventDescriptor(failure),
+      };
+    }
+    return {
+      status: "in_progress",
+      reason: `${sessionLabel} has an active task without a terminal response`,
+      sessionId,
+      controls,
+      taskStartedCount: taskStarts.length,
+      taskCompletedCount: taskCompletions.length,
+    };
+  }
   const terminal = taskCompletions.at(-1)?.payload;
   const lastAgentMessage = terminal?.last_agent_message;
 
   if (!terminal || typeof lastAgentMessage !== "string" || lastAgentMessage.length === 0) {
+    const failure = terminalFailureFor(records);
+    if (failure) {
+      return {
+        status: "unavailable",
+        reason: `${sessionLabel} recorded a terminal failure before task completion`,
+        sessionId,
+        controls,
+        taskStartedCount: taskStarts.length,
+        taskCompletedCount: taskCompletions.length,
+        terminalFailure: eventDescriptor(failure),
+      };
+    }
     return {
       status: "in_progress",
-      reason: "persistent CLI session has no completed task with a terminal response",
+      reason: `${sessionLabel} has no completed task with a terminal response`,
       sessionId,
       controls,
       taskStartedCount: taskStarts.length,
@@ -415,8 +638,7 @@ export const collectCodexCliSessionResult = (
   if (!hasMatchingFinalAnswer) {
     return {
       status: "unavailable",
-      reason:
-        "persistent CLI session terminal response does not have a matching final-answer event",
+      reason: `${sessionLabel} terminal response does not have a matching final-answer event`,
       sessionId,
       controls,
       taskStartedCount: taskStarts.length,
@@ -438,6 +660,558 @@ export const collectCodexCliSessionResult = (
   };
 };
 
+/**
+ * Recovers a terminal response from an exact persistent `codex exec` session.
+ *
+ * This is deliberately separate from native usage collection: a CLI session is
+ * identified by its captured thread ID, not by subagent metadata. The returned
+ * response is for the parent to consume; callers must not add it to the JSONL
+ * telemetry log because review bodies are intentionally not logged.
+ */
+export const collectCodexCliSessionResult = (
+  { sessionId, modelApplied, reasoningApplied } = {},
+  {
+    sessionsRoot = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions"),
+    startedAt,
+    endedAt = new Date().toISOString(),
+    repoRoot,
+  } = {},
+) => {
+  const exact = exactCliSessionData(
+    { sessionId, modelApplied, reasoningApplied },
+    { sessionsRoot, startedAt, endedAt, repoRoot },
+  );
+  if (exact.status !== "available") return exact;
+
+  return terminalResultFromSession({
+    sessionId,
+    controls: exact.controls,
+    records: exact.records,
+    sessionLabel: "persistent CLI session",
+  });
+};
+
+/**
+ * Recovers a terminal response from an exact native reviewer transcript. The
+ * session handle is the native agent path (or its rollout ID when exposed).
+ */
+export const collectCodexNativeSessionResult = (
+  { sessionId, reviewerId, modelApplied, reasoningApplied } = {},
+  {
+    sessionsRoot = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions"),
+    startedAt,
+    endedAt = new Date().toISOString(),
+    repoRoot,
+  } = {},
+) => {
+  const exact = exactNativeSessionData(
+    { sessionId, reviewerId, modelApplied, reasoningApplied },
+    { sessionsRoot, startedAt, endedAt, repoRoot },
+  );
+  if (exact.status !== "available") return exact;
+  return terminalResultFromSession({
+    sessionId: exact.sessionId,
+    controls: exact.controls,
+    records: exact.records,
+    sessionLabel: "native reviewer session",
+  });
+};
+
+const inspectExactSession = ({
+  reviewerId,
+  exact,
+  recovered,
+  observedAt,
+  staleAfterMs,
+  activeAction,
+  stalledAction,
+} = {}) => {
+  const { candidate, controls, records } = exact;
+  const taskStarts = records.filter(
+    (record) => record.type === "event_msg" && record.payload?.type === "task_started",
+  );
+  const taskCompletions = records.filter(
+    (record) => record.type === "event_msg" && record.payload?.type === "task_complete",
+  );
+  const lastRecord = records.at(-1) || null;
+  const lastActivityAt = timestampForRecord(lastRecord);
+  const quietForMs = lastActivityAt
+    ? Math.max(0, new Date(observedAt).getTime() - new Date(lastActivityAt).getTime())
+    : null;
+  const activeTaskStartedAt = timestampForRecord(taskStarts.at(-1)) || candidate.timestamp || null;
+  const timingBasis = taskStarts.length > 0 ? "task_started" : "session_started";
+  const activeTaskElapsedMs = activeTaskStartedAt
+    ? Math.max(0, new Date(observedAt).getTime() - new Date(activeTaskStartedAt).getTime())
+    : null;
+  const shared = {
+    reviewerId,
+    sessionLogPath: candidate.path,
+    ...(candidate.agentPath ? { nativeHandle: candidate.agentPath } : {}),
+    observedAt,
+    lastActivityAt,
+    lastEvent: eventDescriptor(lastRecord),
+  };
+
+  if (recovered.status === "complete") {
+    return {
+      ...shared,
+      ...recovered,
+      lifecycle: "complete",
+      recommendedAction: "Use the recovered final answer and record the completed reviewer pass.",
+    };
+  }
+
+  if (recovered.status === "unavailable") {
+    return {
+      ...shared,
+      ...recovered,
+      lifecycle: "unavailable",
+      recommendedAction:
+        "Record the diagnostic. Retry once with the same reviewer identity and controls only after confirming this session cannot produce a completed result.",
+    };
+  }
+
+  const lifecycle = quietForMs !== null && quietForMs >= staleAfterMs ? "stalled" : "active";
+  return {
+    ...shared,
+    ...recovered,
+    controls,
+    lifecycle,
+    quietForMs,
+    staleAfterMs,
+    activeTaskStartedAt,
+    activeTaskElapsedMs,
+    timingBasis,
+    taskStartedCount: taskStarts.length,
+    taskCompletedCount: taskCompletions.length,
+    recommendedAction: lifecycle === "active" ? activeAction : stalledAction,
+  };
+};
+
+/**
+ * Inspects an exact CLI reviewer session without resuming it. An in-progress
+ * session is observationally active or stalled based on its last JSONL write;
+ * neither state claims that the underlying service has stopped.
+ */
+export const inspectCodexCliReviewerSession = ({
+  logPath,
+  reviewerId,
+  sessionsRoot,
+  timestamp,
+  staleAfterMs = 120_000,
+} = {}) => {
+  if (!logPath) fail("logPath is required");
+  if (!reviewerId) fail("reviewerId is required");
+  if (!Number.isFinite(staleAfterMs) || staleAfterMs < 0)
+    fail("staleAfterMs must be a non-negative finite number");
+
+  const { events } = runIdentity(logPath);
+  const start = latestReviewerSessionStart(events, reviewerId, "codex_cli");
+  if (!start) {
+    return {
+      status: "unavailable",
+      reason: "no codex_cli reviewer session start exists for this reviewer",
+      reviewerId,
+    };
+  }
+
+  const data = start.data;
+  const observedAt = isoTimestamp(timestamp);
+  const exact = exactCliSessionData(
+    {
+      sessionId: data.sessionId,
+      modelApplied: data.modelApplied,
+      reasoningApplied: data.reasoningApplied,
+    },
+    {
+      sessionsRoot,
+      startedAt: events[0].timestamp,
+      endedAt: observedAt,
+      repoRoot: events[0].repo?.root,
+    },
+  );
+  if (exact.status !== "available") return { reviewerId, ...exact };
+
+  const recovered = collectCodexCliSessionResult(
+    {
+      sessionId: data.sessionId,
+      modelApplied: data.modelApplied,
+      reasoningApplied: data.reasoningApplied,
+    },
+    {
+      sessionsRoot,
+      startedAt: events[0].timestamp,
+      endedAt: observedAt,
+      repoRoot: events[0].repo?.root,
+    },
+  );
+  return inspectExactSession({
+    reviewerId,
+    exact,
+    recovered,
+    observedAt,
+    staleAfterMs,
+    activeAction:
+      "Poll this exact session again after a bounded wait; do not resume or replace it.",
+    stalledAction:
+      "This session has been quiet past the threshold. Inspect its final events, record the diagnostic, then use the one permitted same-identity retry only if it remains unavailable.",
+  });
+};
+
+/**
+ * Inspects a native Sol/Terra-style reviewer transcript without sending it a
+ * follow-up. Native launch status can lag its persisted task completion.
+ */
+export const inspectCodexNativeReviewerSession = ({
+  logPath,
+  reviewerId,
+  sessionsRoot,
+  timestamp,
+  staleAfterMs = 120_000,
+} = {}) => {
+  if (!logPath) fail("logPath is required");
+  if (!reviewerId) fail("reviewerId is required");
+  if (!Number.isFinite(staleAfterMs) || staleAfterMs < 0)
+    fail("staleAfterMs must be a non-negative finite number");
+
+  const { events } = runIdentity(logPath);
+  const start = latestReviewerSessionStart(events, reviewerId, "native");
+  if (!start) {
+    return {
+      status: "unavailable",
+      reason: "no native reviewer session start exists for this reviewer",
+      reviewerId,
+    };
+  }
+
+  const data = start.data;
+  const observedAt = isoTimestamp(timestamp);
+  const exact = exactNativeSessionData(
+    {
+      sessionId: data.sessionId,
+      reviewerId,
+      modelApplied: data.modelApplied,
+      reasoningApplied: data.reasoningApplied,
+    },
+    {
+      sessionsRoot,
+      startedAt: events[0].timestamp,
+      endedAt: observedAt,
+      repoRoot: events[0].repo?.root,
+    },
+  );
+  if (exact.status !== "available") return { reviewerId, ...exact };
+
+  const recovered = collectCodexNativeSessionResult(
+    {
+      sessionId: data.sessionId,
+      reviewerId,
+      modelApplied: data.modelApplied,
+      reasoningApplied: data.reasoningApplied,
+    },
+    {
+      sessionsRoot,
+      startedAt: events[0].timestamp,
+      endedAt: observedAt,
+      repoRoot: events[0].repo?.root,
+    },
+  );
+  return inspectExactSession({
+    reviewerId,
+    exact,
+    recovered,
+    observedAt,
+    staleAfterMs,
+    activeAction:
+      "Poll the same native reviewer handle after a bounded wait; do not send a follow-up or create a replacement reviewer.",
+    stalledAction:
+      "This native transcript has been quiet past the threshold. Compare the native handle status with this transcript, record the diagnostic, and retry once only after it is unavailable.",
+  });
+};
+
+const deadlineStateFor = ({ inspection, softDeadlineMs, hardDeadlineMs }) => {
+  if (inspection.lifecycle === "complete" || inspection.lifecycle === "unavailable")
+    return { state: "terminal", elapsedMs: null };
+  const elapsedMs = inspection.activeTaskElapsedMs;
+  if (!Number.isFinite(elapsedMs)) return { state: "unknown", elapsedMs: null };
+  if (elapsedMs >= hardDeadlineMs) return { state: "hard_exceeded", elapsedMs };
+  if (elapsedMs >= softDeadlineMs) return { state: "soft_exceeded", elapsedMs };
+  return { state: "within_budget", elapsedMs };
+};
+
+/**
+ * Inspects every launched reviewer at one instant and applies only
+ * observational soft/hard deadline states. It never interrupts a worker.
+ */
+export const inspectReviewerSessions = ({
+  logPath,
+  sessionsRoot,
+  timestamp,
+  staleAfterMs = 120_000,
+  softDeadlineMs = 600_000,
+  hardDeadlineMs = 1_200_000,
+  recordObservations = false,
+} = {}) => {
+  if (!logPath) fail("logPath is required");
+  if (!Number.isFinite(staleAfterMs) || staleAfterMs < 0)
+    fail("staleAfterMs must be a non-negative finite number");
+  if (!Number.isFinite(softDeadlineMs) || softDeadlineMs < 0)
+    fail("softDeadlineMs must be a non-negative finite number");
+  if (!Number.isFinite(hardDeadlineMs) || hardDeadlineMs < softDeadlineMs)
+    fail("hardDeadlineMs must be a finite number no smaller than softDeadlineMs");
+
+  const { events } = runIdentity(logPath);
+  const observedAt = isoTimestamp(timestamp);
+  const latestStarts = new Map();
+  for (const event of events) {
+    if (event.event !== "reviewer_session_started") continue;
+    const reviewerId = canonicalReviewerId(event.data);
+    const launchMechanism = event.data?.launchMechanism;
+    if (!reviewerId || !["native", "codex_cli"].includes(launchMechanism)) continue;
+    latestStarts.set(reviewerId, launchMechanism);
+  }
+
+  const reviewers = [...latestStarts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([reviewerId, launchMechanism]) => {
+      const inspection =
+        launchMechanism === "native"
+          ? inspectCodexNativeReviewerSession({
+              logPath,
+              reviewerId,
+              sessionsRoot,
+              timestamp: observedAt,
+              staleAfterMs,
+            })
+          : inspectCodexCliReviewerSession({
+              logPath,
+              reviewerId,
+              sessionsRoot,
+              timestamp: observedAt,
+              staleAfterMs,
+            });
+      const { lastAgentMessage, ...diagnostic } = inspection;
+      return {
+        launchMechanism,
+        ...diagnostic,
+        ...(typeof lastAgentMessage === "string" ? { hasRecoveredFinalAnswer: true } : {}),
+        deadline: deadlineStateFor({ inspection: diagnostic, softDeadlineMs, hardDeadlineMs }),
+      };
+    });
+  if (recordObservations) {
+    for (const reviewer of reviewers) {
+      appendEvent({
+        logPath,
+        event: "reviewer_session_observed",
+        data: {
+          reviewerId: reviewer.reviewerId,
+          sessionId: reviewer.sessionId,
+          launchMechanism: reviewer.launchMechanism,
+          lifecycle: reviewer.lifecycle,
+          lastActivityAt: reviewer.lastActivityAt,
+          quietForMs: reviewer.quietForMs,
+          activeTaskElapsedMs: reviewer.activeTaskElapsedMs,
+          timingBasis: reviewer.timingBasis,
+          deadlineState: reviewer.deadline.state,
+          deadlineMs:
+            reviewer.deadline.state === "hard_exceeded"
+              ? hardDeadlineMs
+              : reviewer.deadline.state === "soft_exceeded"
+                ? softDeadlineMs
+                : null,
+        },
+      });
+    }
+  }
+  const count = (predicate) => reviewers.filter(predicate).length;
+  return {
+    observedAt,
+    staleAfterMs,
+    softDeadlineMs,
+    hardDeadlineMs,
+    observationsRecorded: recordObservations ? reviewers.length : 0,
+    reviewers,
+    summary: {
+      reviewerCount: reviewers.length,
+      activeCount: count((reviewer) => reviewer.lifecycle === "active"),
+      stalledCount: count((reviewer) => reviewer.lifecycle === "stalled"),
+      completeCount: count((reviewer) => reviewer.lifecycle === "complete"),
+      unavailableCount: count((reviewer) => reviewer.lifecycle === "unavailable"),
+      softExceededReviewerIds: reviewers
+        .filter((reviewer) => reviewer.deadline.state === "soft_exceeded")
+        .map((reviewer) => reviewer.reviewerId),
+      hardExceededReviewerIds: reviewers
+        .filter((reviewer) => reviewer.deadline.state === "hard_exceeded")
+        .map((reviewer) => reviewer.reviewerId),
+    },
+  };
+};
+
+/**
+ * Starts one persistent, read-only CLI reviewer and records its thread ID as
+ * soon as Codex emits it. The raw JSON stream stays outside the structured run
+ * log so review bodies and diagnostics are not copied into telemetry.
+ */
+export const launchCodexCliReviewer = async ({
+  logPath,
+  reviewerId,
+  model,
+  reasoning,
+  promptFile,
+  outputFile,
+  sessionsRoot,
+  codexCommand = "codex",
+} = {}) => {
+  if (!logPath || !reviewerId || !model || !reasoning || !promptFile || !outputFile) {
+    fail("logPath, reviewerId, model, reasoning, promptFile, and outputFile are required");
+  }
+  if (!existsSync(promptFile)) fail(`promptFile does not exist: ${promptFile}`);
+  if (existsSync(outputFile)) fail(`outputFile already exists: ${outputFile}`);
+
+  mkdirSync(dirname(outputFile), { recursive: true });
+  writeFileSync(outputFile, "", { encoding: "utf8", flag: "wx" });
+  const prompt = readFileSync(promptFile);
+  const args = [
+    "exec",
+    "--model",
+    model,
+    "-c",
+    `model_reasoning_effort=${JSON.stringify(reasoning)}`,
+    "-c",
+    'approval_policy="never"',
+    "--strict-config",
+    "--sandbox",
+    "read-only",
+    "--json",
+    "-",
+  ];
+  const child = spawn(codexCommand, args, { stdio: ["pipe", "pipe", "pipe"] });
+  let stdoutBuffer = "";
+  let sessionId = null;
+  let launchRecorded = false;
+  let stderrBytes = 0;
+
+  const recordThreadStarted = (line) => {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (
+      message?.type !== "thread.started" ||
+      typeof message.thread_id !== "string" ||
+      launchRecorded
+    )
+      return;
+    sessionId = message.thread_id;
+    appendEvent({
+      logPath,
+      event: "reviewer_session_started",
+      data: {
+        reviewerId,
+        launchMechanism: "codex_cli",
+        sessionId,
+        modelRequested: model,
+        reasoningRequested: reasoning,
+      },
+    });
+    launchRecorded = true;
+  };
+
+  child.stdout.on("data", (chunk) => {
+    const text = chunk.toString("utf8");
+    appendFileSync(outputFile, text, "utf8");
+    stdoutBuffer += text;
+    let newline;
+    while ((newline = stdoutBuffer.indexOf("\n")) !== -1) {
+      recordThreadStarted(stdoutBuffer.slice(0, newline));
+      stdoutBuffer = stdoutBuffer.slice(newline + 1);
+    }
+  });
+  child.stderr.on("data", (chunk) => {
+    stderrBytes += chunk.length;
+  });
+  child.stdin.end(prompt);
+
+  const close = await new Promise((resolvePromise) => {
+    child.once("error", (error) =>
+      resolvePromise({ exitCode: null, signal: null, errorMessage: error.message }),
+    );
+    child.once("close", (exitCode, signal) => resolvePromise({ exitCode, signal }));
+  });
+  if (stdoutBuffer.length > 0) recordThreadStarted(stdoutBuffer);
+
+  if (!sessionId) {
+    const reason = close.errorMessage
+      ? "codex CLI could not start before emitting thread.started"
+      : "codex CLI exited without emitting thread.started";
+    appendEvent({
+      logPath,
+      event: "reviewer_session_failed",
+      data: {
+        reviewerId,
+        phase: "initial",
+        reason,
+        clientExitCode: close.exitCode,
+        clientSignal: close.signal,
+      },
+    });
+    return {
+      reviewerId,
+      status: "unavailable",
+      reason,
+      clientExitCode: close.exitCode,
+      clientSignal: close.signal,
+      outputFile,
+      stderrBytes,
+    };
+  }
+
+  const { events } = runIdentity(logPath);
+  const exact = exactCliSessionData(
+    { sessionId },
+    {
+      sessionsRoot,
+      startedAt: events[0].timestamp,
+      repoRoot: events[0].repo?.root,
+    },
+  );
+  if (exact.status === "available") {
+    appendEvent({
+      logPath,
+      event: "reviewer_session_controls_verified",
+      data: {
+        reviewerId,
+        sessionId,
+        modelApplied: exact.controls.model,
+        reasoningApplied: exact.controls.reasoning,
+      },
+    });
+  } else {
+    appendEvent({
+      logPath,
+      event: "reviewer_session_observed",
+      data: {
+        reviewerId,
+        lifecycle: "unavailable",
+        reason: exact.reason,
+      },
+    });
+  }
+
+  const inspection = inspectCodexCliReviewerSession({ logPath, reviewerId, sessionsRoot });
+  return {
+    reviewerId,
+    sessionId,
+    clientExitCode: close.exitCode,
+    clientSignal: close.signal,
+    outputFile,
+    stderrBytes,
+    inspection,
+  };
+};
+
 export const recoverCodexCliReviewerResult = ({
   logPath,
   reviewerId,
@@ -447,24 +1221,16 @@ export const recoverCodexCliReviewerResult = ({
   if (!logPath) fail("logPath is required");
   if (!reviewerId) fail("reviewerId is required");
   const { events } = runIdentity(logPath);
-  const starts = events.filter(
-    (event) =>
-      event.event === "reviewer_session_started" &&
-      canonicalReviewerId(event.data) === reviewerId &&
-      event.data?.launchMechanism === "codex_cli",
-  );
-  if (starts.length !== 1) {
+  const start = latestReviewerSessionStart(events, reviewerId, "codex_cli");
+  if (!start) {
     return {
       status: "unavailable",
-      reason:
-        starts.length === 0
-          ? "no codex_cli reviewer session start exists for this reviewer"
-          : "multiple codex_cli reviewer session starts exist for this reviewer",
+      reason: "no codex_cli reviewer session start exists for this reviewer",
       reviewerId,
     };
   }
 
-  const data = starts[0].data;
+  const data = start.data;
   return {
     reviewerId,
     ...collectCodexCliSessionResult(
@@ -506,12 +1272,12 @@ export const collectCodexSessionUsage = (
 
   const startTime = new Date(startedAt).getTime();
   const endTime = new Date(endedAt).getTime();
-  const reviewerNames = new Set(
-    reviewers.map((reviewer, index) =>
-      expectedAgentName(reviewer.reviewerId || `reviewer-${index + 1}`),
-    ),
+  const files = sessionFilesForWindow(resolve(expandHome(sessionsRoot)), startedAt, endedAt);
+  const nativeReviewers = reviewers.filter(
+    (reviewer) =>
+      reviewer.launchMechanism === "native" || (!reviewer.launchMechanism && !reviewer.expected),
   );
-  const candidates = sessionFilesForWindow(resolve(expandHome(sessionsRoot)), startedAt, endedAt)
+  const nativeCandidates = files
     .map((path) => ({ path, record: readFirstJsonLine(path) }))
     .filter(
       ({ record }) =>
@@ -533,7 +1299,9 @@ export const collectCodexSessionUsage = (
     .filter((candidate) => {
       const timestamp = new Date(candidate.timestamp).getTime();
       return (
-        reviewerNames.has(candidate.agentName) &&
+        nativeReviewers.some((reviewer, index) =>
+          nativeCandidateMatchesReviewer(candidate, reviewer, index),
+        ) &&
         resolve(candidate.cwd || "/") === resolve(repoRoot) &&
         timestamp >= startTime &&
         timestamp <= endTime
@@ -541,84 +1309,176 @@ export const collectCodexSessionUsage = (
     });
 
   const groups = new Map();
-  for (const candidate of candidates) {
+  for (const candidate of nativeCandidates) {
     if (!groups.has(candidate.parentThreadId)) groups.set(candidate.parentThreadId, []);
     groups.get(candidate.parentThreadId).push(candidate);
   }
 
-  const matchingGroups = [...groups.entries()].filter(([, group]) =>
-    reviewers.every((reviewer, index) => {
-      const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`;
-      const exactSessionId = reviewer.sessionId || reviewer.sessionIdentifier;
-      const matches = group.filter(
-        (candidate) =>
-          candidate.agentName === expectedAgentName(reviewerId) &&
-          (!exactSessionId ||
-            candidate.sessionId === exactSessionId ||
-            candidate.agentPath === exactSessionId),
-      );
-      return matches.length === 1;
-    }),
-  );
+  const matchingGroups = nativeReviewers.length
+    ? [...groups.entries()].filter(([, group]) =>
+        nativeReviewers.every((reviewer, index) => {
+          const matches = group.filter((candidate) =>
+            nativeCandidateMatchesReviewer(candidate, reviewer, index),
+          );
+          return matches.length === 1;
+        }),
+      )
+    : [];
 
-  if (matchingGroups.length !== 1) {
-    return {
-      summary,
-      collection: {
-        status: "unavailable",
-        reason:
-          matchingGroups.length === 0
-            ? "no unambiguous reviewer session cohort matched the run"
-            : "multiple reviewer session cohorts matched the run",
-        candidateGroupCount: matchingGroups.length,
-      },
-    };
+  const nativeCandidatesByReviewer = new Map();
+  let parentThreadId = null;
+  let nativeReason = null;
+  if (nativeReviewers.length > 0) {
+    if (matchingGroups.length === 1) {
+      [parentThreadId] = matchingGroups[0];
+      for (const [index, reviewer] of nativeReviewers.entries()) {
+        const reviewerId = reviewer.reviewerId;
+        const candidate = matchingGroups[0][1].find((entry) =>
+          nativeCandidateMatchesReviewer(entry, reviewer, index),
+        );
+        nativeCandidatesByReviewer.set(reviewerId, candidate);
+      }
+    } else {
+      nativeReason =
+        matchingGroups.length === 0
+          ? "no unambiguous native reviewer session cohort matched the run"
+          : "multiple native reviewer session cohorts matched the run";
+    }
   }
 
-  const [parentThreadId, group] = matchingGroups[0];
-  const collected = [];
-  const enrichedReviewers = reviewers.map((reviewer, index) => {
-    const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`;
-    const exactSessionId = reviewer.sessionId || reviewer.sessionIdentifier;
-    const candidate = group.find(
-      (entry) =>
-        entry.agentName === expectedAgentName(reviewerId) &&
-        (!exactSessionId ||
-          entry.sessionId === exactSessionId ||
-          entry.agentPath === exactSessionId),
+  const cliCandidatesByReviewer = new Map();
+  const cliReasonsByReviewer = new Map();
+  for (const reviewer of reviewers.filter((entry) => entry.launchMechanism === "codex_cli")) {
+    const exact = exactCliSessionData(
+      {
+        sessionId: reviewer.sessionId || reviewer.sessionIdentifier,
+        modelApplied: reviewer.modelApplied,
+        reasoningApplied: reviewer.reasoningApplied,
+      },
+      { sessionsRoot, startedAt, endedAt, repoRoot },
     );
-    const usage = codexSessionUsage(candidate.path);
+    if (exact.status === "available")
+      cliCandidatesByReviewer.set(reviewer.reviewerId, exact.candidate);
+    else cliReasonsByReviewer.set(reviewer.reviewerId, exact.reason);
+  }
+
+  const enrichReviewer = (reviewer, index, candidate, source, reason) => {
+    const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`;
     const expectedInvocationCount = invocationsFor(reviewer).length;
+    if (!candidate) {
+      return {
+        reviewer,
+        collected: {
+          reviewerId,
+          source,
+          expectedInvocationCount,
+          observedInvocationCount: null,
+          completedInvocationCount: null,
+          collected: false,
+          durationCollected: false,
+          reason: reason || "reviewer has no captured session",
+        },
+      };
+    }
+    const usage = codexSessionUsage(candidate.path);
     const valid =
       usage.tokenUsage &&
+      expectedInvocationCount > 0 &&
       usage.invocationCount === expectedInvocationCount &&
       usage.completedInvocationCount === expectedInvocationCount;
-    collected.push({
-      reviewerId,
-      sessionId: candidate.sessionId,
-      expectedInvocationCount,
-      observedInvocationCount: usage.invocationCount,
-      completedInvocationCount: usage.completedInvocationCount,
-      collected: Boolean(valid),
-    });
-    return valid
-      ? {
-          ...reviewer,
-          sessionId: candidate.sessionId,
-          sessionTokenUsage: usage.tokenUsage,
-          sessionTokenUsageSource: "codex_rollout_token_count",
-        }
-      : reviewer;
+    const durationValid =
+      usage.durationMs !== null &&
+      expectedInvocationCount > 0 &&
+      usage.invocationCount === expectedInvocationCount &&
+      usage.completedInvocationCount === expectedInvocationCount;
+    return {
+      reviewer: {
+        ...reviewer,
+        sessionId: candidate.sessionId || reviewer.sessionId,
+        ...(valid
+          ? {
+              sessionTokenUsage: usage.tokenUsage,
+              sessionTokenUsageSource: "codex_rollout_token_count",
+            }
+          : {}),
+        ...(durationValid
+          ? {
+              sessionDurationMs: usage.durationMs,
+              sessionDurationSource: "codex_rollout_task_duration",
+            }
+          : {}),
+      },
+      collected: {
+        reviewerId,
+        source,
+        sessionId: candidate.sessionId || reviewer.sessionId || null,
+        expectedInvocationCount,
+        observedInvocationCount: usage.invocationCount,
+        completedInvocationCount: usage.completedInvocationCount,
+        collected: Boolean(valid),
+        durationCollected: durationValid,
+        ...(valid || durationValid
+          ? {}
+          : {
+              reason:
+                expectedInvocationCount === 0
+                  ? "reviewer has no recorded completed or continuity invocation"
+                  : "session invocation count does not match the reviewer ledger",
+            }),
+      },
+    };
+  };
+
+  const enriched = reviewers.map((reviewer, index) => {
+    const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`;
+    if (
+      reviewer.launchMechanism === "native" ||
+      (!reviewer.launchMechanism && !reviewer.expected)
+    ) {
+      return enrichReviewer(
+        reviewer,
+        index,
+        nativeCandidatesByReviewer.get(reviewerId),
+        "native",
+        nativeReason,
+      );
+    }
+    if (reviewer.launchMechanism === "codex_cli") {
+      return enrichReviewer(
+        reviewer,
+        index,
+        cliCandidatesByReviewer.get(reviewerId),
+        "codex_cli",
+        cliReasonsByReviewer.get(reviewerId),
+      );
+    }
+    return enrichReviewer(
+      reviewer,
+      index,
+      null,
+      "unavailable",
+      reviewer.expected
+        ? "reviewer was expected but no reviewer_session_started event was recorded"
+        : undefined,
+    );
   });
 
+  const enrichedReviewers = enriched.map((entry) => entry.reviewer);
+  const collected = enriched.map((entry) => entry.collected);
   const collectedCount = collected.filter((reviewer) => reviewer.collected).length;
   return {
     summary: { ...summary, reviewers: enrichedReviewers },
     collection: {
-      status: collectedCount === reviewers.length ? "complete" : "partial",
-      parentThreadId,
+      status:
+        collectedCount === reviewers.length
+          ? "complete"
+          : collectedCount > 0
+            ? "partial"
+            : "unavailable",
+      ...(parentThreadId ? { parentThreadId } : {}),
       reviewerCount: reviewers.length,
       collectedCount,
+      ...(nativeReason ? { nativeReason, nativeCandidateGroupCount: matchingGroups.length } : {}),
       reviewers: collected,
     },
   };
@@ -770,6 +1630,9 @@ const canonicalReviewerId = (value) =>
       ? value.reviewer
       : null;
 
+const durationFrom = (value) =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? { durationMs: value } : {};
+
 const canonicalFinding = (finding) => {
   if (!finding || typeof finding !== "object" || Array.isArray(finding)) return null;
   const findingId =
@@ -813,10 +1676,17 @@ export const canonicalSummaryFromEvents = (events, summary) => {
   };
 
   const addRound = (reviewer, round) => {
-    const exists = reviewer.rounds.some(
+    const existing = reviewer.rounds.find(
       (entry) => entry.phase === round.phase && entry.round === round.round,
     );
-    if (!exists) reviewer.rounds.push(round);
+    if (!existing) {
+      reviewer.rounds.push(round);
+      return;
+    }
+    if (round.findingIds.length > 0 || existing.findingIds.length === 0)
+      existing.findingIds = round.findingIds;
+    if (round.tokenUsage !== null) existing.tokenUsage = round.tokenUsage;
+    if (round.durationMs !== undefined) existing.durationMs = round.durationMs;
   };
 
   for (const event of events) {
@@ -843,6 +1713,17 @@ export const canonicalSummaryFromEvents = (events, summary) => {
       continue;
     }
 
+    if (event.event === "reviewer_session_controls_verified") {
+      Object.assign(reviewer, {
+        ...(typeof data.sessionId === "string" ? { sessionId: data.sessionId } : {}),
+        ...(typeof data.modelApplied === "string" ? { modelApplied: data.modelApplied } : {}),
+        ...(typeof data.reasoningApplied === "string"
+          ? { reasoningApplied: data.reasoningApplied }
+          : {}),
+      });
+      continue;
+    }
+
     if (
       event.event === "reviewer_pass_completed" ||
       event.event === "remediation_reviewer_pass_completed"
@@ -852,6 +1733,7 @@ export const canonicalSummaryFromEvents = (events, summary) => {
         round: typeof data.round === "number" ? data.round : 1,
         findingIds: stringArray(data.findingIds ?? data.finding_ids),
         tokenUsage: data.tokenUsage ?? null,
+        ...durationFrom(data.durationMs),
       });
       continue;
     }
@@ -859,13 +1741,49 @@ export const canonicalSummaryFromEvents = (events, summary) => {
     if (event.event === "reviewer_continuity_verified") {
       reviewer.continuityVerified = true;
       const round = typeof data.round === "number" ? data.round : 1;
-      if (!reviewer.continuityChecks.some((entry) => entry.round === round)) {
+      const existing = reviewer.continuityChecks.find((entry) => entry.round === round);
+      if (!existing) {
         reviewer.continuityChecks.push({
           round,
           verified: true,
           tokenUsage: data.tokenUsage ?? null,
+          ...durationFrom(data.durationMs),
         });
+      } else {
+        existing.verified = true;
+        if (data.tokenUsage !== null && data.tokenUsage !== undefined)
+          existing.tokenUsage = data.tokenUsage;
+        if (typeof data.durationMs === "number") existing.durationMs = data.durationMs;
       }
+      continue;
+    }
+
+    if (
+      event.event === "reviewer_pass_failed" ||
+      event.event === "reviewer_continuity_failed" ||
+      event.event === "reviewer_session_failed" ||
+      event.event === "reviewer_session_cancelled"
+    ) {
+      reviewer.failure = {
+        phase:
+          typeof data.phase === "string"
+            ? data.phase
+            : event.event === "reviewer_continuity_failed"
+              ? "continuity"
+              : "initial",
+        reason:
+          typeof data.reason === "string"
+            ? data.reason
+            : typeof data.failureReason === "string"
+              ? data.failureReason
+              : "reviewer invocation failed",
+      };
+      if (event.event === "reviewer_session_cancelled") reviewer.sessionLifecycle = "cancelled";
+      continue;
+    }
+
+    if (event.event === "reviewer_session_observed" && typeof data.lifecycle === "string") {
+      reviewer.sessionLifecycle = data.lifecycle;
     }
   }
 
@@ -895,13 +1813,81 @@ export const canonicalSummaryFromEvents = (events, summary) => {
   };
 };
 
+const reviewerIdBaseForModel = (model) => {
+  const normalized = typeof model === "string" ? model.replace(/^gpt-[\d.]+-/, "") : "";
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(normalized) ? normalized : "reviewer";
+};
+
+const expectedReviewersFromConfiguration = (configuration = {}) => {
+  const requestedCohort = Array.isArray(configuration.reviewerCohortRequested)
+    ? configuration.reviewerCohortRequested
+    : [];
+  const expected = [];
+  const ordinals = new Map();
+  for (const entry of requestedCohort) {
+    if (!entry || typeof entry.model !== "string") continue;
+    const count = Number.isInteger(entry.count) && entry.count > 0 ? entry.count : 0;
+    const base = reviewerIdBaseForModel(entry.model);
+    const ordinal = ordinals.get(base) || 0;
+    for (let index = 1; index <= count; index += 1) {
+      expected.push({ reviewerId: `${base}-${ordinal + index}`, modelRequested: entry.model });
+    }
+    ordinals.set(base, ordinal + count);
+  }
+  if (expected.length > 0) return expected;
+
+  const count =
+    Number.isInteger(configuration.requestedReviewerCount) &&
+    configuration.requestedReviewerCount > 0
+      ? configuration.requestedReviewerCount
+      : 0;
+  return Array.from({ length: count }, (_, index) => ({ reviewerId: `reviewer-${index + 1}` }));
+};
+
+const includeExpectedReviewers = (summary, configuration) => {
+  const reviewers = Array.isArray(summary.reviewers) ? [...summary.reviewers] : [];
+  const reviewerById = new Map(reviewers.map((reviewer) => [reviewer.reviewerId, reviewer]));
+  for (const expected of expectedReviewersFromConfiguration(configuration)) {
+    const existing = reviewerById.get(expected.reviewerId);
+    if (existing) {
+      if (!existing.launchMechanism) {
+        existing.expected = true;
+        if (!existing.modelRequested) existing.modelRequested = expected.modelRequested;
+        if (!existing.reasoningRequested && typeof configuration.reasoningRequested === "string")
+          existing.reasoningRequested = configuration.reasoningRequested;
+      }
+      continue;
+    }
+    reviewers.push({
+      ...expected,
+      expected: true,
+      ...(typeof configuration.reasoningRequested === "string"
+        ? { reasoningRequested: configuration.reasoningRequested }
+        : {}),
+      continuityChecks: [],
+      rounds: [],
+    });
+  }
+  return {
+    ...summary,
+    reviewers: reviewers.sort((left, right) => left.reviewerId.localeCompare(right.reviewerId)),
+  };
+};
+
 export const validateFinishSummary = (summary) => {
+  const status = summary.status || "complete";
+  if (!new Set(["complete", "partial", "blocked", "failed"]).has(status)) {
+    fail("finish summary status must be complete, partial, blocked, or failed");
+  }
   const reviewers = Array.isArray(summary.reviewers) ? summary.reviewers : [];
   if (reviewers.length === 0) fail("finish summary must include at least one reviewer");
 
   for (const reviewer of reviewers) {
+    if (typeof reviewer.reviewerId !== "string" || reviewer.reviewerId.length === 0) {
+      fail("finish summary reviewer is missing reviewerId");
+    }
+    if (status !== "complete") continue;
     const requiredFields = [
-      "reviewerId",
       "launchMechanism",
       "sessionId",
       "modelRequested",
@@ -997,6 +1983,53 @@ const metricsForSessionUsage = (usage) => {
   };
 };
 
+const reviewerDurationMs = (reviewer) => {
+  if (
+    typeof reviewer.sessionDurationMs === "number" &&
+    Number.isFinite(reviewer.sessionDurationMs) &&
+    reviewer.sessionDurationMs >= 0
+  ) {
+    return reviewer.sessionDurationMs;
+  }
+
+  const invocations = invocationsFor(reviewer);
+  if (invocations.length === 0) return null;
+  let durationMs = 0;
+  for (const invocation of invocations) {
+    if (
+      typeof invocation.durationMs !== "number" ||
+      !Number.isFinite(invocation.durationMs) ||
+      invocation.durationMs < 0
+    ) {
+      return null;
+    }
+    durationMs += invocation.durationMs;
+  }
+  return durationMs;
+};
+
+const durationMetrics = (reviewers) => {
+  let invocationCount = 0;
+  let reviewersWithDuration = 0;
+  let durationMs = 0;
+
+  for (const reviewer of reviewers) {
+    invocationCount += invocationsFor(reviewer).length;
+    const reviewerDuration = reviewerDurationMs(reviewer);
+    if (reviewerDuration !== null) {
+      reviewersWithDuration += 1;
+      durationMs += reviewerDuration;
+    }
+  }
+
+  return {
+    invocationCount,
+    reviewersWithDuration,
+    complete: reviewers.length > 0 && reviewersWithDuration === reviewers.length,
+    durationMs: reviewersWithDuration > 0 ? durationMs : null,
+  };
+};
+
 export const estimateTokenCost = (model, metrics) => {
   const rates = PRICING_SNAPSHOT.ratesPerMillionTokens[model];
   const totals = metrics?.totals;
@@ -1032,12 +2065,14 @@ const reviewerUsage = (reviewers) =>
     const tokenUsage = reviewer.sessionTokenUsage
       ? metricsForSessionUsage(reviewer.sessionTokenUsage)
       : tokenMetrics([reviewer]);
+    const duration = reviewerDurationMs(reviewer);
     return {
       reviewerId: reviewer.reviewerId || `reviewer-${index + 1}`,
       model,
       reasoning: reviewer.reasoningApplied || "unknown",
       tokenUsage,
       estimatedCostUsd: estimateTokenCost(model, tokenUsage),
+      durationMs: duration,
     };
   });
 
@@ -1064,6 +2099,16 @@ const costMetrics = (usageByReviewer) => {
 const formatInteger = (value) =>
   Number.isFinite(value) ? new Intl.NumberFormat("en-US").format(value) : "n/a";
 const formatCost = (value) => (Number.isFinite(value) ? `$${value.toFixed(4)}` : "n/a");
+const formatDuration = (value) => {
+  if (!Number.isFinite(value) || value < 0) return "n/a";
+  const seconds = Math.round(value / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${remainingSeconds}s`;
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+  return `${remainingSeconds}s`;
+};
 const reviewerLabel = (reviewerId, reasoning) => {
   const parts = reviewerId.split("-");
   if (parts.length > 1 && /^\d+$/.test(parts.at(-1))) {
@@ -1072,6 +2117,26 @@ const reviewerLabel = (reviewerId, reasoning) => {
   const name = parts.map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join(" ");
   return `${name} (${reasoning || "unknown"})`;
 };
+
+export const reviewersMissingTelemetry = (derived) =>
+  (() => {
+    const reviewers = Array.isArray(derived?.reviewerUsage) ? derived.reviewerUsage : [];
+    if (reviewers.length === 0) return ["no-reviewers"];
+    return reviewers
+      .filter((reviewer) => {
+        const usage = reviewer.tokenUsage?.totals || {};
+        const hasTokens = [
+          "inputTokens",
+          "cachedInputTokens",
+          "outputTokens",
+          "reasoningOutputTokens",
+          "totalTokens",
+        ].some((field) => Number.isFinite(usage[field]));
+        const hasDuration = Number.isFinite(reviewer.durationMs) && reviewer.durationMs >= 0;
+        return !hasTokens && !hasDuration;
+      })
+      .map((reviewer) => reviewer.reviewerId || "unknown-reviewer");
+  })();
 
 export const renderUsageTable = (derived) => {
   const reviewers = Array.isArray(derived?.reviewerUsage) ? derived.reviewerUsage : [];
@@ -1082,8 +2147,11 @@ export const renderUsageTable = (derived) => {
     "reasoningOutputTokens",
     "totalTokens",
   ];
+  if (reviewersMissingTelemetry(derived).length > 0) return "";
   const totals = Object.fromEntries(fields.map((field) => [field, 0]));
   const coverage = Object.fromEntries(fields.map((field) => [field, 0]));
+  let totalDurationMs = 0;
+  let durationCoverage = 0;
 
   const rows = reviewers.map((reviewer) => {
     const usage = reviewer.tokenUsage?.totals || {};
@@ -1093,7 +2161,11 @@ export const renderUsageTable = (derived) => {
         coverage[field] += 1;
       }
     }
-    return `| ${reviewerLabel(reviewer.reviewerId, reviewer.reasoning)} | ${formatInteger(usage.inputTokens)} | ${formatInteger(usage.cachedInputTokens)} | ${formatInteger(usage.outputTokens)} | ${formatInteger(usage.reasoningOutputTokens)} | ${formatInteger(usage.totalTokens)} | ${formatCost(reviewer.estimatedCostUsd)} |`;
+    if (Number.isFinite(reviewer.durationMs) && reviewer.durationMs >= 0) {
+      totalDurationMs += reviewer.durationMs;
+      durationCoverage += 1;
+    }
+    return `| ${reviewerLabel(reviewer.reviewerId, reviewer.reasoning)} | ${formatInteger(usage.inputTokens)} | ${formatInteger(usage.cachedInputTokens)} | ${formatInteger(usage.outputTokens)} | ${formatInteger(usage.reasoningOutputTokens)} | ${formatInteger(usage.totalTokens)} | ${formatCost(reviewer.estimatedCostUsd)} | ${formatDuration(reviewer.durationMs)} |`;
   });
 
   const totalCells = fields.map((field) =>
@@ -1101,17 +2173,11 @@ export const renderUsageTable = (derived) => {
       reviewers.length > 0 && coverage[field] === reviewers.length ? totals[field] : null,
     ),
   );
-  const pricing = derived?.estimatedCost?.pricing || PRICING_SNAPSHOT;
-  const limitations = Array.isArray(pricing.limitations) ? pricing.limitations.join(" ") : "";
   return [
-    "### Reviewer token usage",
-    "",
-    "| Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost |",
-    "|---|---:|---:|---:|---:|---:|---:|",
+    "| Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost | Agent time |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|",
     ...rows,
-    `| **Total** | **${totalCells[0]}** | **${totalCells[1]}** | **${totalCells[2]}** | **${totalCells[3]}** | **${totalCells[4]}** | **${formatCost(derived?.estimatedCost?.estimatedTotalUsd)}** |`,
-    "",
-    `Pricing: ${pricing.serviceTier} API-equivalent rates effective ${pricing.effectiveDate} ([source](${pricing.source})). ${limitations}`,
+    `| **Total** | **${totalCells[0]}** | **${totalCells[1]}** | **${totalCells[2]}** | **${totalCells[3]}** | **${totalCells[4]}** | **${formatCost(derived?.estimatedCost?.estimatedTotalUsd)}** | **${formatDuration(durationCoverage === reviewers.length && reviewers.length > 0 ? totalDurationMs : null)}** |`,
   ].join("\n");
 };
 
@@ -1220,6 +2286,7 @@ export const deriveMetrics = (summary = {}) => {
   const usageByReviewer = reviewerUsage(reviewers);
 
   return {
+    runStatus: typeof summary.status === "string" ? summary.status : "complete",
     reviewerSessionCount: reviewers.length,
     reviewerInvocationCount: reviewers.reduce(
       (count, reviewer) => count + invocationsFor(reviewer).length,
@@ -1252,6 +2319,7 @@ export const deriveMetrics = (summary = {}) => {
     modelComparison: modelComparison(reviewers, findings),
     reviewerUsage: usageByReviewer,
     tokenUsage: tokenMetrics(reviewers),
+    duration: durationMetrics(reviewers),
     estimatedCost: costMetrics(usageByReviewer),
     githubReviewBotCount: githubReviewBots.length,
     reviewBotLoopCount:
@@ -1274,6 +2342,7 @@ export const finishRun = ({
   if (events.some((item) => item.event === "run_finished"))
     fail(`Run is already finished: ${logPath}`);
   let finalSummary = canonicalSummaryFromEvents(events, summary);
+  finalSummary = includeExpectedReviewers(finalSummary, events[0].configuration);
   validateFinishSummary(finalSummary);
   let tokenUsageCollection = null;
   if (collectCodexUsage) {
@@ -1297,6 +2366,28 @@ export const finishRun = ({
   };
   appendFileSync(logPath, `${JSON.stringify(record)}\n`, "utf8");
   return record;
+};
+
+export const diagnoseCodexUsage = ({ logPath, sessionsRoot, timestamp } = {}) => {
+  if (!logPath) fail("logPath is required");
+  const { events } = runIdentity(logPath);
+  const finished = [...events].reverse().find((event) => event.event === "run_finished");
+  if (!finished) fail(`Run is not finished: ${logPath}`);
+  const result = collectCodexSessionUsage(
+    { reviewers: finished.data?.reviewers || [] },
+    {
+      sessionsRoot,
+      startedAt: events[0].timestamp,
+      endedAt: timestamp || new Date().toISOString(),
+      repoRoot: events[0].repo?.root,
+    },
+  );
+  const missingReviewerIds = reviewersMissingTelemetry(deriveMetrics(result.summary));
+  return {
+    status: missingReviewerIds.length === 0 ? "complete" : "incomplete",
+    missingReviewerIds,
+    collection: result.collection,
+  };
 };
 
 const parseOptions = (args) => {
@@ -1338,15 +2429,20 @@ const help = `Usage:
   review-run-log.mjs templates
   review-run-log.mjs start [--repo-root <path>] [--output-root <path>] [--data-json <object>]
   review-run-log.mjs append --log <path> --event <lower_snake_case> [--data-json <object>]
+  review-run-log.mjs launch-cli-reviewer --log <path> --reviewer-id <id> --model <model> --reasoning <level> --prompt-file <path> --output-file <path> [--sessions-root <path>]
   review-run-log.mjs recover-cli-session --log <path> --reviewer-id <id> [--sessions-root <path>]
+  review-run-log.mjs inspect-cli-session --log <path> --reviewer-id <id> [--sessions-root <path>] [--stale-after-ms <ms>]
+  review-run-log.mjs inspect-native-session --log <path> --reviewer-id <id> [--sessions-root <path>] [--stale-after-ms <ms>]
+  review-run-log.mjs inspect-reviewers --log <path> [--sessions-root <path>] [--stale-after-ms <ms>] [--soft-deadline-ms <ms>] [--hard-deadline-ms <ms>] [--record]
   review-run-log.mjs finish --log <path> [--collect-codex-usage] [--sessions-root <path>] [--data-json <summary>]
+  review-run-log.mjs diagnose-codex-usage --log <path> [--sessions-root <path>]
   review-run-log.mjs report --log <path>
 
 Use --data-file <path> instead of --data-json, or --data-file - to read JSON from stdin.
 Each command prints JSON. templates prints canonical start, event, and finish payloads;
 start prints logPath and runId; finish prints the derived metrics.`;
 
-const main = () => {
+const main = async () => {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === "--help" || command === "help") {
     process.stdout.write(`${help}\n`);
@@ -1375,11 +2471,62 @@ const main = () => {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
+  if (command === "launch-cli-reviewer") {
+    const result = await launchCodexCliReviewer({
+      logPath: options.log,
+      reviewerId: options["reviewer-id"],
+      model: options.model,
+      reasoning: options.reasoning,
+      promptFile: options["prompt-file"],
+      outputFile: options["output-file"],
+      sessionsRoot: options["sessions-root"],
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
   if (command === "recover-cli-session") {
     const result = recoverCodexCliReviewerResult({
       logPath: options.log,
       reviewerId: options["reviewer-id"],
       sessionsRoot: options["sessions-root"],
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+  if (command === "inspect-cli-session") {
+    const staleAfterMs =
+      options["stale-after-ms"] === undefined ? undefined : Number(options["stale-after-ms"]);
+    const result = inspectCodexCliReviewerSession({
+      logPath: options.log,
+      reviewerId: options["reviewer-id"],
+      sessionsRoot: options["sessions-root"],
+      staleAfterMs,
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+  if (command === "inspect-native-session") {
+    const staleAfterMs =
+      options["stale-after-ms"] === undefined ? undefined : Number(options["stale-after-ms"]);
+    const result = inspectCodexNativeReviewerSession({
+      logPath: options.log,
+      reviewerId: options["reviewer-id"],
+      sessionsRoot: options["sessions-root"],
+      staleAfterMs,
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+  if (command === "inspect-reviewers") {
+    const numberOption = (name) =>
+      options[name] === undefined ? undefined : Number(options[name]);
+    const result = inspectReviewerSessions({
+      logPath: options.log,
+      sessionsRoot: options["sessions-root"],
+      staleAfterMs: numberOption("stale-after-ms"),
+      softDeadlineMs: numberOption("soft-deadline-ms"),
+      hardDeadlineMs: numberOption("hard-deadline-ms"),
+      recordObservations: Boolean(options.record),
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
@@ -1392,14 +2539,33 @@ const main = () => {
       sessionsRoot: options["sessions-root"],
     });
     process.stdout.write(
-      `${JSON.stringify({ logPath: resolve(options.log), derived: result.data.derived })}\n`,
+      `${JSON.stringify({
+        logPath: resolve(options.log),
+        derived: result.data.derived,
+        tokenUsageCollection: result.data.tokenUsageCollection || null,
+      })}\n`,
     );
+    return;
+  }
+  if (command === "diagnose-codex-usage") {
+    const result = diagnoseCodexUsage({
+      logPath: options.log,
+      sessionsRoot: options["sessions-root"],
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
   if (command === "report") {
     const events = readEvents(options.log);
     const finished = [...events].reverse().find((event) => event.event === "run_finished");
     if (!finished) fail(`Run is not finished: ${options.log}`);
+    const missingReviewerIds = reviewersMissingTelemetry(finished.data?.derived);
+    if (missingReviewerIds.length > 0) {
+      fail(
+        `Reviewer telemetry is missing for ${missingReviewerIds.join(", ")}. ` +
+          `Run diagnose-codex-usage, repair the ledger or session collection, then finish with --collect-codex-usage again before reporting.`,
+      );
+    }
     process.stdout.write(`${renderUsageTable(finished.data?.derived)}\n`);
     return;
   }
@@ -1408,10 +2574,8 @@ const main = () => {
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : undefined;
 if (invokedPath === scriptPath) {
-  try {
-    main();
-  } catch (error) {
+  main().catch((error) => {
     process.stderr.write(`review-run-log: ${error.message}\n`);
     process.exitCode = 1;
-  }
+  });
 }

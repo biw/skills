@@ -13,17 +13,37 @@ import {
   estimateTokenCost,
   finishRun,
   renderUsageTable,
+  reviewersMissingTelemetry,
   sanitizeRemote,
   startRun,
 } from "../../skills/review-fix-address-bots/scripts/review-run-log.mjs";
 
 test("canonical templates produce a finishable event-driven run", () => {
+  assert.deepEqual(LOG_TEMPLATES.configuration, {
+    requestedReviewerCount: 5,
+    reviewerCohortRequested: [
+      { model: "gpt-5.6-sol", count: 1 },
+      { model: "gpt-5.6-terra", count: 1 },
+      { model: "gpt-5.6-luna", count: 3 },
+    ],
+    reasoningRequested: "high",
+    watcherIntervalMs: 30_000,
+    softReviewerDeadlineMs: 600_000,
+    hardReviewerDeadlineMs: 1_200_000,
+    remediationRoundLimit: 3,
+    reviewBotLoopLimit: 8,
+  });
+
   const temporaryRoot = mkdtempSync(join(tmpdir(), "review-run-templates-"));
   try {
     const { logPath } = startRun({
       repoRoot: temporaryRoot,
       outputRoot: join(temporaryRoot, "logs"),
-      configuration: LOG_TEMPLATES.configuration,
+      configuration: {
+        requestedReviewerCount: 1,
+        reviewerCohortRequested: [{ model: "gpt-5.6-sol", count: 1 }],
+        reasoningRequested: "high",
+      },
     });
     for (const template of [
       LOG_TEMPLATES.events.reviewerSessionStarted,
@@ -408,7 +428,7 @@ test("collects an unambiguous Codex reviewer session and renders deterministic M
           },
         },
       },
-      { type: "event_msg", payload: { type: "task_complete" } },
+      { type: "event_msg", payload: { duration_ms: 30_000, type: "task_complete" } },
       { type: "event_msg", payload: { type: "task_started" } },
       {
         type: "event_msg",
@@ -425,7 +445,7 @@ test("collects an unambiguous Codex reviewer session and renders deterministic M
           },
         },
       },
-      { type: "event_msg", payload: { type: "task_complete" } },
+      { type: "event_msg", payload: { duration_ms: 95_000, type: "task_complete" } },
     ];
     writeFileSync(
       join(sessionDirectory, "rollout-sol.jsonl"),
@@ -461,19 +481,110 @@ test("collects an unambiguous Codex reviewer session and renders deterministic M
       reasoningOutputTokens: 1_500,
       totalTokens: 123_000,
     });
+    assert.equal(result.summary.reviewers[0].sessionDurationMs, 125_000);
 
     const markdown = renderUsageTable(deriveMetrics(result.summary));
-    assert.match(
+    assert.equal(
       markdown,
-      /\| Sol1 \(high\) \| 120,000 \| 100,000 \| 3,000 \| 1,500 \| 123,000 \| \$0\.2400 \|/,
-    );
-    assert.match(
-      markdown,
-      /\| \*\*Total\*\* \| \*\*120,000\*\* \| \*\*100,000\*\* \| \*\*3,000\*\* \| \*\*1,500\*\* \| \*\*123,000\*\* \| \*\*\$0\.2400\*\* \|/,
+      [
+        "| Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost | Agent time |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Sol1 (high) | 120,000 | 100,000 | 3,000 | 1,500 | 123,000 | $0.2400 | 2m 5s |",
+        "| **Total** | **120,000** | **100,000** | **3,000** | **1,500** | **123,000** | **$0.2400** | **2m 5s** |",
+      ].join("\n"),
     );
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
+});
+
+test("renders ledgered CLI durations when session collection is unavailable", () => {
+  const markdown = renderUsageTable(
+    deriveMetrics({
+      reviewers: [
+        {
+          reviewerId: "luna-1",
+          modelApplied: "gpt-5.6-luna",
+          reasoningApplied: "high",
+          continuityChecks: [
+            {
+              durationMs: 1_500,
+              round: 1,
+              tokenUsage: {
+                cachedInputTokens: 200,
+                inputTokens: 500,
+                outputTokens: 100,
+                reasoningOutputTokens: 50,
+                totalTokens: 600,
+              },
+              verified: true,
+            },
+          ],
+          rounds: [
+            {
+              durationMs: 18_500,
+              findingIds: [],
+              phase: "initial",
+              round: 1,
+              tokenUsage: {
+                cachedInputTokens: 800,
+                inputTokens: 2_000,
+                outputTokens: 300,
+                reasoningOutputTokens: 150,
+                totalTokens: 2_300,
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  assert.match(markdown, /\| Luna1 \(high\) .* \| 20s \|/);
+  assert.match(markdown, /\| \*\*Total\*\* .* \| \*\*20s\*\* \|/);
+});
+
+test("renders unavailable agent time as n/a instead of an estimate", () => {
+  const markdown = renderUsageTable(
+    deriveMetrics({
+      reviewers: [
+        {
+          reviewerId: "terra-1",
+          modelApplied: "gpt-5.6-terra",
+          reasoningApplied: "high",
+          sessionTokenUsage: {
+            cachedInputTokens: 100,
+            inputTokens: 200,
+            outputTokens: 50,
+            reasoningOutputTokens: 25,
+            totalTokens: 250,
+          },
+        },
+      ],
+    }),
+  );
+
+  assert.match(markdown, /\| Terra1 \(high\) .* \| n\/a \|/);
+  assert.match(markdown, /\| \*\*Total\*\* .* \| \*\*n\/a\*\* \|/);
+});
+
+test("refuses to render a table when any reviewer lacks telemetry", () => {
+  const derived = deriveMetrics({
+    reviewers: [
+      {
+        reviewerId: "sol-1",
+        modelApplied: "gpt-5.6-sol",
+        reasoningApplied: "high",
+        continuityChecks: [{ round: 1, tokenUsage: null, verified: true }],
+        rounds: [{ findingIds: [], phase: "initial", round: 1, tokenUsage: null }],
+      },
+    ],
+  });
+  const markdown = renderUsageTable(derived);
+
+  assert.equal(markdown, "");
+  assert.deepEqual(reviewersMissingTelemetry(derived), ["sol-1"]);
+  assert.deepEqual(reviewersMissingTelemetry(deriveMetrics({ reviewers: [] })), ["no-reviewers"]);
 });
 
 test("keeps reviewer model unknown when applied routing is unavailable", () => {
