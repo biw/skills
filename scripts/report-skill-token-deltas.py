@@ -123,13 +123,10 @@ def render_report(deltas: list[TokenDelta]) -> str:
             (delta for delta in deltas if delta.skill == skill),
             key=lambda delta: delta.file,
         )
-        for delta in skill_deltas:
-            if not delta.delta:
-                continue
-
+        for index, delta in enumerate(delta for delta in skill_deltas if delta.delta):
             lines.append(
                 "| "
-                f"{escape_markdown(delta.skill)} | "
+                f"{escape_markdown(delta.skill) if index == 0 else ''} | "
                 f"{escape_markdown(delta.file)} | "
                 f"{delta.current:,} | {delta.updated:,} | {format_delta(delta.delta)} |",
             )
@@ -137,7 +134,7 @@ def render_report(deltas: list[TokenDelta]) -> str:
         current_total = sum(delta.current for delta in skill_deltas)
         updated_total = sum(delta.updated for delta in skill_deltas)
         lines.append(
-            f"| **{escape_markdown(skill)}** | **Total** | "
+            "|  | **Total** | "
             f"**{current_total:,}** | **{updated_total:,}** | "
             f"**{format_delta(updated_total - current_total)}** |",
         )
