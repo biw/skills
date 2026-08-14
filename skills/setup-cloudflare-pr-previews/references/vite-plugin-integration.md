@@ -42,26 +42,24 @@ Do not add `--env` to Vite itself. `--env` is a Wrangler command flag; the Cloud
 Client-exposed values such as `VITE_SITE_URL` are usually compiled into browser code. Read them from the selected Wrangler environment during Vite configuration and inject only the public prefix:
 
 ```ts
-import { fileURLToPath } from 'node:url'
-import { unstable_readConfig } from 'wrangler'
+import { fileURLToPath } from "node:url";
+import { unstable_readConfig } from "wrangler";
 
-const wranglerConfigPath = fileURLToPath(
-  new URL('./wrangler.jsonc', import.meta.url),
-)
+const wranglerConfigPath = fileURLToPath(new URL("./wrangler.jsonc", import.meta.url));
 
 function getClientRuntimeEnv(): Record<string, string> {
-  const cloudflareEnv = process.env.CLOUDFLARE_ENV ?? 'development'
+  const cloudflareEnv = process.env.CLOUDFLARE_ENV ?? "development";
   const { vars } = unstable_readConfig({
     config: wranglerConfigPath,
     env: cloudflareEnv,
-  })
+  });
 
   return Object.fromEntries(
     Object.entries(vars ?? {}).filter(
       (entry): entry is [string, string] =>
-        entry[0].startsWith('VITE_') && typeof entry[1] === 'string',
+        entry[0].startsWith("VITE_") && typeof entry[1] === "string",
     ),
-  )
+  );
 }
 ```
 
@@ -74,14 +72,14 @@ The stable preview URL is present at bundle time, but a branch alias URL is not 
 Collect process overrides for URL-dependent variables and merge them into the plugin config so explicit local or CI build inputs reach the Worker runtime:
 
 ```ts
-const runtimeEnvOverrideKeys = ['BETTER_AUTH_URL', 'VITE_SITE_URL'] as const
+const runtimeEnvOverrideKeys = ["BETTER_AUTH_URL", "VITE_SITE_URL"] as const;
 
 const runtimeEnvOverrides = Object.fromEntries(
   runtimeEnvOverrideKeys.flatMap((key) => {
-    const value = process.env[key]
-    return value ? [[key, value]] : []
+    const value = process.env[key];
+    return value ? [[key, value]] : [];
   }),
-)
+);
 
 cloudflare({
   config: (config) => ({
@@ -90,8 +88,8 @@ cloudflare({
       ...runtimeEnvOverrides,
     },
   }),
-  viteEnvironment: { name: 'ssr' },
-})
+  viteEnvironment: { name: "ssr" },
+});
 ```
 
 During remote deployment, also pass each origin-dependent runtime variable with Wrangler `--var KEY:value`. Keep authentication secrets in Worker secrets, never these flags.

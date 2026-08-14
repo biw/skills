@@ -29,13 +29,13 @@ Execute these phases in order. The primary agent alone owns judgment, edits, com
 
 Use the reviewer count, model mix, and reasoning levels explicitly requested by the user. Otherwise use this default cohort for every initial and remediation pass:
 
-| Reviewer ID | Model | Reasoning |
-| --- | --- | --- |
-| `sol-1` | `gpt-5.6-sol` | `high` |
-| `terra-1` | `gpt-5.6-terra` | `high` |
-| `luna-1` | `gpt-5.6-luna` | `high` |
-| `luna-2` | `gpt-5.6-luna` | `high` |
-| `luna-3` | `gpt-5.6-luna` | `high` |
+| Reviewer ID | Model           | Reasoning |
+| ----------- | --------------- | --------- |
+| `sol-1`     | `gpt-5.6-sol`   | `high`    |
+| `terra-1`   | `gpt-5.6-terra` | `high`    |
+| `luna-1`    | `gpt-5.6-luna`  | `high`    |
+| `luna-2`    | `gpt-5.6-luna`  | `high`    |
+| `luna-3`    | `gpt-5.6-luna`  | `high`    |
 
 For a count from one through five, use that order. For another explicit mix, assign stable IDs from model tier plus one-based ordinal. Ask for a mix when a count above five is otherwise underspecified. Normalize native task names from `sol-1` to `sol_1` for deterministic discovery. Keep the raw review prompt, target fingerprint, role boundary, reasoning, and service tier identical across the cohort. Queue over concurrency limits without editing the target.
 

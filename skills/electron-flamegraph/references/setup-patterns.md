@@ -12,7 +12,7 @@ V8 flags recognized: `--cpu-prof`, `--cpu-prof-dir=<dir>`, `--cpu-prof-interval=
 electron --cpu-prof --cpu-prof-dir=./profiles --cpu-prof-interval=500 .
 ```
 
-The flags come *before* the entry `.`, because everything after the script path goes to `process.argv`.
+The flags come _before_ the entry `.`, because everything after the script path goes to `process.argv`.
 
 ### npm script wrapping `electron .`
 
@@ -66,16 +66,19 @@ Caveat: `NODE_OPTIONS` applies to every Node process spawned, which may include 
 Run the binary directly with flags:
 
 **macOS:**
+
 ```bash
 ./out/MyApp-darwin-arm64/MyApp.app/Contents/MacOS/MyApp --cpu-prof --cpu-prof-dir=/tmp/profiles
 ```
 
 **Linux:**
+
 ```bash
 ./out/MyApp-linux-x64/MyApp --cpu-prof --cpu-prof-dir=/tmp/profiles
 ```
 
 **Windows:**
+
 ```
 .\out\MyApp-win32-x64\MyApp.exe --cpu-prof --cpu-prof-dir=C:\temp\profiles
 ```
@@ -87,60 +90,61 @@ Drop this helper into the main-process codebase. Match the existing file style (
 ### TypeScript
 
 ```ts
-import { Session } from 'node:inspector/promises'
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { Session } from "node:inspector/promises";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const profileBlock = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
-  const session = new Session()
-  session.connect()
-  await session.post('Profiler.enable')
-  await session.post('Profiler.start')
+  const session = new Session();
+  session.connect();
+  await session.post("Profiler.enable");
+  await session.post("Profiler.start");
   try {
-    return await fn()
+    return await fn();
   } finally {
-    const { profile } = await session.post('Profiler.stop')
-    const path = join(process.cwd(), `${name}-${Date.now()}.cpuprofile`)
-    writeFileSync(path, JSON.stringify(profile))
-    session.disconnect()
-    console.log(`[profile] wrote ${path}`)
+    const { profile } = await session.post("Profiler.stop");
+    const path = join(process.cwd(), `${name}-${Date.now()}.cpuprofile`);
+    writeFileSync(path, JSON.stringify(profile));
+    session.disconnect();
+    console.log(`[profile] wrote ${path}`);
   }
-}
+};
 ```
 
 ### JavaScript (ESM)
 
 ```js
-import { Session } from 'node:inspector/promises'
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { Session } from "node:inspector/promises";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const profileBlock = async (name, fn) => {
-  const session = new Session()
-  session.connect()
-  await session.post('Profiler.enable')
-  await session.post('Profiler.start')
+  const session = new Session();
+  session.connect();
+  await session.post("Profiler.enable");
+  await session.post("Profiler.start");
   try {
-    return await fn()
+    return await fn();
   } finally {
-    const { profile } = await session.post('Profiler.stop')
-    const path = join(process.cwd(), `${name}-${Date.now()}.cpuprofile`)
-    writeFileSync(path, JSON.stringify(profile))
-    session.disconnect()
-    console.log(`[profile] wrote ${path}`)
+    const { profile } = await session.post("Profiler.stop");
+    const path = join(process.cwd(), `${name}-${Date.now()}.cpuprofile`);
+    writeFileSync(path, JSON.stringify(profile));
+    session.disconnect();
+    console.log(`[profile] wrote ${path}`);
   }
-}
+};
 ```
 
 ### Usage
 
 ```ts
-const rows = await profileBlock('prisma-findmany', () =>
-  prisma.whatever.findMany({ where: { /* ... */ } })
-)
+const rows = await profileBlock("prisma-findmany", () =>
+  prisma.whatever.findMany({ where: {/* ... */} }),
+);
 ```
 
 Constraints:
+
 - One inspector session per process at a time. Don't nest `profileBlock` calls — the inner one will fail to start the profiler.
 - `await` must cover everything you care about. If the profiled function returns a Promise that continues work after resolving, that tail work won't be captured.
 - In a worker thread, this works unchanged — each worker has its own inspector session.
