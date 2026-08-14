@@ -17,22 +17,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
-      - run: pnpm install --frozen-lockfile
       - run: python -m pip install --disable-pip-version-check "tiktoken==0.13.0"
       - name: Generate token report
-        run: python scripts/report-skill-token-deltas.py --output "$RUNNER_TEMP/skill-token-deltas.md"
+        run: >-
+          python scripts/report-skill-token-deltas.py
+          --base-ref "${{ github.event.pull_request.base.sha }}"
+          --output "$RUNNER_TEMP/skill-token-deltas.md"
 
       - name: Update pull request comment
         if: github.event.pull_request.head.repo.fork == false
