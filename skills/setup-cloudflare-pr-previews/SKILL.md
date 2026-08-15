@@ -15,7 +15,7 @@ Create a reusable deployment topology while adapting names, build output, migrat
    - `references/d1-and-deployment.md` for provisioning, migrations, binding injection, deploy commands, or target-repository integration.
    - `references/cleanup-and-operations.md` for PR-close cleanup, GitHub trust boundaries, dashboard configuration, access, or credentials.
    - `references/vite-plugin-integration.md` when the repository uses `@cloudflare/vite-plugin`.
-   Read all three core references for a full setup; use only the affected reference for a focused audit or repair.
+     Read all three core references for a full setup; use only the affected reference for a focused audit or repair.
 3. Resolve the resource prefix, Worker names, production branches, D1 binding/migrations, deployable config path, stable URLs, origin-dependent variables, and isolated versus shared bindings before rendering.
 4. Render the bundled templates into scratch space, never over the target repository:
 

@@ -8,41 +8,41 @@ Instrument one outcome per request or per important handler.
 
 ```ts
 type OperationOutcome = {
-  appVersion: string
-  actor?: { idHash?: string | undefined; type: string } | undefined
-  completedAt?: string | undefined
-  correlationId?: string | undefined
-  durationMs?: number | undefined
-  environment: 'development' | 'preview' | 'production' | string
-  errorCode?: null | string | undefined
-  errorMessage?: null | string | undefined
-  gitCommit?: string | undefined
-  metrics?: Record<string, number> | undefined
-  operationId: string
-  operationName: string
-  operationType: 'http_request' | 'queue_consumer' | 'cron_run'
-  resource?: { id?: string | undefined; type: string } | undefined
-  retryCount: number
-  rollout?: Record<string, boolean | number | string> | undefined
-  sessionId?: string | undefined
-  startedAt: string
-  statusCode?: number | undefined
-  success: boolean
-  trigger?: 'manual' | 'startup' | 'background' | 'retry' | 'auto' | undefined
-}
+  appVersion: string;
+  actor?: { idHash?: string | undefined; type: string } | undefined;
+  completedAt?: string | undefined;
+  correlationId?: string | undefined;
+  durationMs?: number | undefined;
+  environment: "development" | "preview" | "production" | string;
+  errorCode?: null | string | undefined;
+  errorMessage?: null | string | undefined;
+  gitCommit?: string | undefined;
+  metrics?: Record<string, number> | undefined;
+  operationId: string;
+  operationName: string;
+  operationType: "http_request" | "queue_consumer" | "cron_run";
+  resource?: { id?: string | undefined; type: string } | undefined;
+  retryCount: number;
+  rollout?: Record<string, boolean | number | string> | undefined;
+  sessionId?: string | undefined;
+  startedAt: string;
+  statusCode?: number | undefined;
+  success: boolean;
+  trigger?: "manual" | "startup" | "background" | "retry" | "auto" | undefined;
+};
 
 const startOutcome = (
   startMs: number,
   seed: Omit<
     OperationOutcome,
-    | 'completedAt'
-    | 'durationMs'
-    | 'errorCode'
-    | 'errorMessage'
-    | 'operationId'
-    | 'startedAt'
-    | 'statusCode'
-    | 'success'
+    | "completedAt"
+    | "durationMs"
+    | "errorCode"
+    | "errorMessage"
+    | "operationId"
+    | "startedAt"
+    | "statusCode"
+    | "success"
   >,
 ): OperationOutcome => ({
   ...seed,
@@ -50,63 +50,63 @@ const startOutcome = (
   operationId: crypto.randomUUID(),
   startedAt: new Date(startMs).toISOString(),
   success: false,
-})
+});
 
 const classifyError = (error: unknown): string => {
   // Classify domain errors before they reach this function.
   // Returning error.name is a last-resort fallback; prefer stable codes
   // like "checkout_card_declined" at the call site when possible.
-  return error instanceof Error ? error.name : 'unknown_error'
-}
+  return error instanceof Error ? error.name : "unknown_error";
+};
 
 const formatErrorMessage = (error: unknown): string => {
-  return error instanceof Error ? error.message : 'Unknown error'
-}
+  return error instanceof Error ? error.message : "Unknown error";
+};
 
 const inferStatusCode = (error: unknown): number => {
-  return error instanceof Error && 'statusCode' in error && typeof error.statusCode === 'number'
+  return error instanceof Error && "statusCode" in error && typeof error.statusCode === "number"
     ? error.statusCode
-    : 500
-}
+    : 500;
+};
 
 // Put these helpers in a shared file such as src/lib/outcome.ts.
 const persistOutcome = async (outcome: OperationOutcome): Promise<void> => {
-  void outcome
+  void outcome;
   // Replace this with your real DB or analytics write.
-}
+};
 
-app.post('/checkout', async (req, res, next) => {
-  const startMs = Date.now()
-  const requestId = req.headers['x-request-id']
+app.post("/checkout", async (req, res, next) => {
+  const startMs = Date.now();
+  const requestId = req.headers["x-request-id"];
   const outcome = startOutcome(startMs, {
-    appVersion: process.env.APP_VERSION ?? 'dev',
+    appVersion: process.env.APP_VERSION ?? "dev",
     correlationId: Array.isArray(requestId) ? requestId[0] : requestId,
-    environment: process.env.NODE_ENV ?? 'development',
-    operationName: 'checkout.submit',
-    operationType: 'http_request',
+    environment: process.env.NODE_ENV ?? "development",
+    operationName: "checkout.submit",
+    operationType: "http_request",
     retryCount: 0,
-    trigger: 'manual',
-  })
+    trigger: "manual",
+  });
 
   try {
-    const result = await runCheckout(req, outcome)
-    outcome.success = true
-    outcome.statusCode = 200
-    res.json(result)
+    const result = await runCheckout(req, outcome);
+    outcome.success = true;
+    outcome.statusCode = 200;
+    res.json(result);
   } catch (error) {
-    outcome.success = false
-    outcome.errorCode = classifyError(error)
-    outcome.errorMessage = formatErrorMessage(error)
-    outcome.statusCode = inferStatusCode(error)
-    next(error)
+    outcome.success = false;
+    outcome.errorCode = classifyError(error);
+    outcome.errorMessage = formatErrorMessage(error);
+    outcome.statusCode = inferStatusCode(error);
+    next(error);
   } finally {
-    outcome.completedAt = new Date().toISOString()
-    outcome.durationMs = Date.now() - startMs
+    outcome.completedAt = new Date().toISOString();
+    outcome.durationMs = Date.now() - startMs;
     await persistOutcome(outcome).catch((persistError: unknown) => {
-      console.error('[outcome] failed to persist outcome', persistError)
-    })
+      console.error("[outcome] failed to persist outcome", persistError);
+    });
   }
-})
+});
 ```
 
 ## Queues and Workers

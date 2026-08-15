@@ -20,10 +20,10 @@ Configure `CLOUDFLARE_ACCOUNT_ID` as a repository variable and `CLOUDFLARE_API_T
 
 Connect two projects:
 
-| Project | Build variable | Branch policy |
-| --- | --- | --- |
-| `<app>` | `CLOUDFLARE_ENV=production` | Production branch only |
-| `<app>-staging` | `CLOUDFLARE_ENV=preview` | Production and non-production branches |
+| Project         | Build variable              | Branch policy                          |
+| --------------- | --------------------------- | -------------------------------------- |
+| `<app>`         | `CLOUDFLARE_ENV=production` | Production branch only                 |
+| `<app>-staging` | `CLOUDFLARE_ENV=preview`    | Production and non-production branches |
 
 Use the repository bundle command and dynamic deploy script. On the preview project, replace both the production-branch and non-production deploy commands; the default non-production upload bypasses D1 provisioning, migrations, binding patching, and URL overrides.
 

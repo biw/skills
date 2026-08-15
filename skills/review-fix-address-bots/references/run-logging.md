@@ -172,9 +172,9 @@ node scripts/review-run-log.mjs report --log "$REVIEW_RUN_LOG" \
 Append `.context/reviewer-usage-report.md` verbatim as the final content of the user-facing workflow summary only after `report` succeeds. Do not manually recompute, reorder, reformat, or add prose around it. `report` fails rather than rendering a table when any reviewer has neither tokens nor duration; diagnose and repair that reviewer first. A successful report renders this exact Markdown column order, with `Estimated cost` immediately after `Total` and runtime-derived cumulative `Agent time` last:
 
 ```markdown
-| Reviewer | Input | Cached input | Output | Reasoning | Total | Estimated cost | Agent time |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Sol1 (high) | 100,000 | 90,000 | 2,000 | 1,200 | 102,000 | $0.1550 | 1m 42s |
+| Reviewer    |   Input | Cached input | Output | Reasoning |   Total | Estimated cost | Agent time |
+| ----------- | ------: | -----------: | -----: | --------: | ------: | -------------: | ---------: |
+| Sol1 (high) | 100,000 |       90,000 |  2,000 |     1,200 | 102,000 |        $0.1550 |     1m 42s |
 ```
 
 The generated table uses `n/a` only for an unavailable field in a reviewer row that otherwise has real telemetry. `Agent time` is the sum of completed-task runtime across a reviewer's review, continuity, and remediation turns; concurrent reviewers can therefore have a total greater than elapsed wall time. Keep collection failures in the run log; do not add their reason, pricing notes, or replacement values to the user-facing summary. Preserve the raw reviewer/round/continuity/finding arrays so future analyses can compute different metrics without changing old logs. Treat these metrics as observations from one run, not a general model ranking.

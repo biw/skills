@@ -1,0 +1,78 @@
+name: Report Skill Token Deltas
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: skill-token-deltas-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - run: python -m pip install --disable-pip-version-check "tiktoken==0.13.0"
+      - name: Generate token report
+        run: >-
+          python scripts/report-skill-token-deltas.py
+          --base-ref "${{ github.event.pull_request.base.sha }}"
+          --output "$RUNNER_TEMP/skill-token-deltas.md"
+
+      - name: Update pull request comment
+        if: github.event.pull_request.head.repo.fork == false
+        uses: actions/github-script@v9
+        env:
+          REPORT_PATH: ${{ runner.temp }}/skill-token-deltas.md
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require("node:fs");
+            const marker = "<!-- skill-token-deltas -->";
+            const report = fs.readFileSync(process.env.REPORT_PATH, "utf8").trim();
+            const body = `${marker}\n${report}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const markedComments = comments.filter((comment) => comment.body?.includes(marker));
+            const [existing, ...duplicates] = markedComments;
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+            for (const duplicate of duplicates) {
+              await github.rest.issues.deleteComment({
+                owner,
+                repo,
+                comment_id: duplicate.id,
+              });
+            }
+
+      - name: Explain skipped fork comment
+        if: github.event.pull_request.head.repo.fork
+        run: echo "The report is not posted to fork pull requests because their workflow token cannot write comments."

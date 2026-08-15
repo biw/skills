@@ -17,57 +17,57 @@ Wrap the entrypoint once, enrich inside the operation, and finalize in `finally`
 
 ```ts
 type OperationOutcome = {
-  appVersion: string
-  actor?: { idHash?: string | undefined; type: string } | undefined
-  completedAt?: string | undefined
-  correlationId?: string | undefined
-  durationMs?: number | undefined
-  environment: 'development' | 'preview' | 'production'
-  errorCode?: null | string | undefined
-  errorMessage?: null | string | undefined
-  gitCommit?: string | undefined
-  metrics?: Record<string, number> | undefined
-  operationId: string
-  operationName: string
+  appVersion: string;
+  actor?: { idHash?: string | undefined; type: string } | undefined;
+  completedAt?: string | undefined;
+  correlationId?: string | undefined;
+  durationMs?: number | undefined;
+  environment: "development" | "preview" | "production";
+  errorCode?: null | string | undefined;
+  errorMessage?: null | string | undefined;
+  gitCommit?: string | undefined;
+  metrics?: Record<string, number> | undefined;
+  operationId: string;
+  operationName: string;
   operationType:
-    | 'ipc_command'
-    | 'trpc_mutation'
-    | 'trpc_query'
-    | 'background_job'
-    | 'startup_step'
-    | 'queue_consumer'
-  resource?: { id?: string | undefined; type: string } | undefined
-  retryCount: number
-  rollout?: Record<string, boolean | number | string> | undefined
-  sessionId?: string | undefined
-  startedAt: string
-  statusCode?: number | undefined
-  success: boolean
-  trigger?: 'manual' | 'startup' | 'background' | 'retry' | 'auto' | undefined
-}
+    | "ipc_command"
+    | "trpc_mutation"
+    | "trpc_query"
+    | "background_job"
+    | "startup_step"
+    | "queue_consumer";
+  resource?: { id?: string | undefined; type: string } | undefined;
+  retryCount: number;
+  rollout?: Record<string, boolean | number | string> | undefined;
+  sessionId?: string | undefined;
+  startedAt: string;
+  statusCode?: number | undefined;
+  success: boolean;
+  trigger?: "manual" | "startup" | "background" | "retry" | "auto" | undefined;
+};
 
 type OperationOutcomeSeed = Omit<
   OperationOutcome,
-  | 'completedAt'
-  | 'durationMs'
-  | 'errorCode'
-  | 'errorMessage'
-  | 'operationId'
-  | 'startedAt'
-  | 'success'
->
+  | "completedAt"
+  | "durationMs"
+  | "errorCode"
+  | "errorMessage"
+  | "operationId"
+  | "startedAt"
+  | "success"
+>;
 
 // Put these helpers in one shared file such as src/backend/lib/outcome.ts.
 const classifyError = (error: unknown): string => {
   // Classify domain errors before they reach this function.
   // Returning error.name is a last-resort fallback; prefer stable codes
   // like "update_feed_http_404" at the call site when possible.
-  return error instanceof Error ? error.name : 'unknown_error'
-}
+  return error instanceof Error ? error.name : "unknown_error";
+};
 
 const formatErrorMessage = (error: unknown): string => {
-  return error instanceof Error ? error.message : 'Unknown error'
-}
+  return error instanceof Error ? error.message : "Unknown error";
+};
 
 // Keep camelCase in memory and map to storage casing at the persistence boundary.
 const toStoredOutcome = (outcome: OperationOutcome) => ({
@@ -92,43 +92,43 @@ const toStoredOutcome = (outcome: OperationOutcome) => ({
   success: outcome.success,
   trigger: outcome.trigger,
   actor: outcome.actor,
-})
+});
 
 const persistOutcome = async (outcome: OperationOutcome): Promise<void> => {
   // Replace this with a Prisma, SQLite, or analytics-sink write in your app.
   // Example: await prisma.operationOutcome.create({ data: toStoredOutcome(outcome) })
-  void outcome
-}
+  void outcome;
+};
 
 const withOutcome = async <T>(
   seed: OperationOutcomeSeed,
   run: (outcome: OperationOutcome) => Promise<T>,
 ): Promise<T> => {
-  const startMs = Date.now()
+  const startMs = Date.now();
   const outcome: OperationOutcome = {
     ...seed,
     operationId: crypto.randomUUID(),
     startedAt: new Date(startMs).toISOString(),
     errorCode: null,
     success: false,
-  }
+  };
 
   try {
-    const result = await run(outcome)
-    outcome.success = true
-    return result
+    const result = await run(outcome);
+    outcome.success = true;
+    return result;
   } catch (error) {
-    outcome.errorCode = classifyError(error)
-    outcome.errorMessage = formatErrorMessage(error)
-    throw error
+    outcome.errorCode = classifyError(error);
+    outcome.errorMessage = formatErrorMessage(error);
+    throw error;
   } finally {
-    outcome.completedAt = new Date().toISOString()
-    outcome.durationMs = Date.now() - startMs
+    outcome.completedAt = new Date().toISOString();
+    outcome.durationMs = Date.now() - startMs;
     await persistOutcome(outcome).catch((persistError: unknown) => {
-      console.error('[outcome] failed to persist outcome', persistError)
-    })
+      console.error("[outcome] failed to persist outcome", persistError);
+    });
   }
-}
+};
 ```
 
 If your store supports camelCase cleanly, standardize on camelCase end-to-end instead of mapping. The important rule is one casing per layer, not a forced snake_case database.

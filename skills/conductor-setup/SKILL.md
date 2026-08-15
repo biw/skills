@@ -17,7 +17,7 @@ Use this skill when configuring a repository for Conductor workspaces. When invo
    - `references/settings-and-migration.md` for settings layers, schemas, supported repository fields, or `conductor.json` migration.
    - `references/scripts-and-environment.md` for setup/run/archive scripts, shells, variables, concurrency, Spotlight, or caches.
    - `references/files-layouts-and-troubleshooting.md` for Files to copy, `.worktreeinclude`, monorepos, linked repositories, MCP/privacy, or diagnosis.
-   Read more than one only when the task crosses those concerns.
+     Read more than one only when the task crosses those concerns.
 3. Apply the selected reference's documented contract. Prefer team settings over machine-local configuration; preserve an existing deliberate script layout; use Conductor variables instead of hard-coded workspace paths, resources, and local ports.
 4. Keep secrets and machine-specific credentials out of committed settings. Change MCP/privacy configuration only when asked or required by repository policy.
 5. Validate TOML and run the narrowest relevant check for every script changed. Report when the existing setup already satisfies the requested outcome.
