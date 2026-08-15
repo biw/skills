@@ -2,7 +2,7 @@
 
 [![skills.sh](https://skills.sh/b/biw/skills)](https://skills.sh/biw/skills)
 
-A set of useful skills for agents.
+My personal installable skills for coding agents
 
 ## Quickstart
 
