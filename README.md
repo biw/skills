@@ -17,6 +17,7 @@ npx skills add biw/skills
 - [`address-review-bots`](./skills/address-review-bots/SKILL.md): wait for and triage Claude, Devin, and similar GitHub PR review-bot feedback.
 - [`audit-improve-seo`](./skills/audit-improve-seo/SKILL.md): audit and improve technical and on-page SEO, including metadata, indexability, structured data, and generated social images.
 - [`better-logging`](./skills/better-logging/SKILL.md): design durable operation outcome events so failures, latency, retries, and rollouts are queryable.
+- [`codex-multi-model-delegation`](./skills/codex-multi-model-delegation/SKILL.md): route bounded Codex multi-agent work across GPT-5.6 Sol, Terra, and Luna with explicit model selection and verification.
 - [`conductor-setup`](./skills/conductor-setup/SKILL.md): configure `.conductor/settings.toml`, migrate legacy `conductor.json`, and set up local/cloud Conductor workspace scripts; invoke it as `$conductor-setup` in Codex.
 - [`detailed-pr-description`](./skills/detailed-pr-description/SKILL.md): assess test coverage or draft/update review-ready GitHub PR descriptions with change context, risks, follow-up work, and focused code references.
 - [`electron-flamegraph`](./skills/electron-flamegraph/SKILL.md): profile Electron main-process CPU usage and analyze `.cpuprofile` files.

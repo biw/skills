@@ -47,13 +47,17 @@ Do not send this skill, any reference, helper commands, run-log details, or the 
 
 Prefer a native subagent only when it exposes the exact model, reasoning level, and a stable resumable handle. Launch every initial reviewer with `fork_turns: "none"` and its self-contained packet; do not fork the primary conversation. Verify applied settings from runtime evidence, not requested arguments alone.
 
-`fork_turns: "none"` does not make an unavailable native model available. If native launch omits an assigned model such as Luna, do not silently substitute or call it unavailable: use the persistent CLI fallback below. If the native schema hides routing fields, check whether the user already configured this fresh-session-only workaround; never change it without explicit authorization:
+`fork_turns: "none"` does not make an unavailable native model available. Configure Multi-Agent v2 once so native launches can use the exact assigned model, then start a fresh Codex session:
 
 ```toml
 [features.multi_agent_v2]
+enabled = true
 hide_spawn_agent_metadata = false
 tool_namespace = "agents"
+expose_spawn_agent_model_overrides = true
 ```
+
+If native launch still omits an assigned model such as Luna, do not silently substitute or call it unavailable: use the persistent CLI fallback below.
 
 Use the helper for every CLI fallback; it captures the thread ID, keeps raw output in gitignored `.context`, and verifies persisted controls:
 

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Codex Multi-Model Delegation"
+  short_description: "Route Codex subagents across Sol, Terra, and Luna"
+  default_prompt: "Use $codex-multi-model-delegation to plan and run this work across the appropriate Codex models."
+policy:
+  allow_implicit_invocation: true
