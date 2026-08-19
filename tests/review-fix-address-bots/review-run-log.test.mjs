@@ -22,11 +22,11 @@ test("canonical templates produce a finishable event-driven run", () => {
   assert.deepEqual(LOG_TEMPLATES.configuration, {
     requestedReviewerCount: 5,
     reviewerCohortRequested: [
-      { model: "gpt-5.6-sol", count: 1 },
-      { model: "gpt-5.6-terra", count: 1 },
-      { model: "gpt-5.6-luna", count: 3 },
+      { model: "gpt-5.6-sol", count: 1, reasoning: "high" },
+      { model: "gpt-5.6-terra", count: 1, reasoning: "xhigh" },
+      { model: "gpt-5.6-luna", count: 1, reasoning: "max" },
+      { model: "gpt-5.6-luna", count: 2, reasoning: "xhigh" },
     ],
-    reasoningRequested: "high",
     watcherIntervalMs: 30_000,
     softReviewerDeadlineMs: 600_000,
     hardReviewerDeadlineMs: 1_200_000,
@@ -498,7 +498,7 @@ test("collects an unambiguous Codex reviewer session and renders deterministic M
   }
 });
 
-test("renders ledgered CLI durations when session collection is unavailable", () => {
+test("renders ledgered durations when session collection is unavailable", () => {
   const markdown = renderUsageTable(
     deriveMetrics({
       reviewers: [
