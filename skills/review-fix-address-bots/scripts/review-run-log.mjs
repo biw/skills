@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const SCHEMA_VERSION = 1;
@@ -23,11 +23,11 @@ export const LOG_TEMPLATES = Object.freeze({
   configuration: Object.freeze({
     requestedReviewerCount: 5,
     reviewerCohortRequested: Object.freeze([
-      Object.freeze({ model: "gpt-5.6-sol", count: 1 }),
-      Object.freeze({ model: "gpt-5.6-terra", count: 1 }),
-      Object.freeze({ model: "gpt-5.6-luna", count: 3 }),
+      Object.freeze({ model: "gpt-5.6-sol", count: 1, reasoning: "high" }),
+      Object.freeze({ model: "gpt-5.6-terra", count: 1, reasoning: "xhigh" }),
+      Object.freeze({ model: "gpt-5.6-luna", count: 1, reasoning: "max" }),
+      Object.freeze({ model: "gpt-5.6-luna", count: 2, reasoning: "xhigh" }),
     ]),
-    reasoningRequested: "high",
     watcherIntervalMs: 30_000,
     softReviewerDeadlineMs: 600_000,
     hardReviewerDeadlineMs: 1_200_000,
@@ -61,7 +61,7 @@ export const LOG_TEMPLATES = Object.freeze({
         reviewerId: "luna-1",
         sessionId: "<session-id>",
         modelApplied: "gpt-5.6-luna",
-        reasoningApplied: "high",
+        reasoningApplied: "max",
       }),
     }),
     reviewerSessionObserved: Object.freeze({
@@ -93,7 +93,7 @@ export const LOG_TEMPLATES = Object.freeze({
       data: Object.freeze({
         reviewerId: "luna-1",
         phase: "initial",
-        reason: "persistent CLI session unavailable after bounded polling",
+        reason: "native reviewer session unavailable after bounded polling",
       }),
     }),
     continuity: Object.freeze({
@@ -359,18 +359,6 @@ const readJsonlRecords = (path) => {
 
 const sessionIdFromMeta = (record) => record?.payload?.id || record?.payload?.session_id || null;
 
-const cliSessionCandidate = (path) => {
-  const first = readFirstJsonLine(path);
-  if (first?.type !== "session_meta" || first.payload?.source !== "exec") return null;
-  return {
-    path,
-    cwd: first.payload.cwd || null,
-    model: first.payload.model || null,
-    sessionId: sessionIdFromMeta(first),
-    timestamp: first.payload.timestamp || first.timestamp || null,
-  };
-};
-
 const nativeSessionCandidate = (path) => {
   const first = readFirstJsonLine(path);
   const spawn = first?.payload?.source?.subagent?.thread_spawn;
@@ -394,67 +382,6 @@ const appliedControlsForSession = (records, candidate) => {
     model: context.model || candidate.model || null,
     reasoning: context.effort || context.collaboration_mode?.settings?.reasoning_effort || null,
   };
-};
-
-const exactCliSessionData = (
-  { sessionId, modelApplied, reasoningApplied } = {},
-  {
-    sessionsRoot = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions"),
-    startedAt,
-    endedAt = new Date().toISOString(),
-    repoRoot,
-  } = {},
-) => {
-  if (!sessionId || !startedAt || !repoRoot) {
-    return {
-      status: "unavailable",
-      reason: "sessionId, startedAt, and repoRoot are required",
-    };
-  }
-
-  const candidates = sessionFilesForWindow(resolve(expandHome(sessionsRoot)), startedAt, endedAt)
-    .map(cliSessionCandidate)
-    .filter(Boolean)
-    .filter(
-      (candidate) =>
-        candidate.sessionId === sessionId && resolve(candidate.cwd || "/") === resolve(repoRoot),
-    );
-
-  if (candidates.length !== 1) {
-    return {
-      status: "unavailable",
-      reason:
-        candidates.length === 0
-          ? "no exact persistent CLI session matched the reviewer session ID and repository"
-          : "multiple persistent CLI sessions matched the reviewer session ID and repository",
-      candidateCount: candidates.length,
-    };
-  }
-
-  const candidate = candidates[0];
-  const { records, malformedLine } = readJsonlRecords(candidate.path);
-  if (malformedLine !== null) {
-    return {
-      status: "unavailable",
-      reason: `persistent CLI session contains malformed JSON at line ${malformedLine}`,
-      sessionId,
-    };
-  }
-
-  const controls = appliedControlsForSession(records, candidate);
-  if (
-    (modelApplied && controls.model !== modelApplied) ||
-    (reasoningApplied && controls.reasoning !== reasoningApplied)
-  ) {
-    return {
-      status: "unavailable",
-      reason: "persistent CLI session applied controls do not match the reviewer ledger",
-      sessionId,
-      controls,
-    };
-  }
-
-  return { status: "available", candidate, controls, records, sessionId };
 };
 
 const exactNativeSessionData = (
@@ -661,37 +588,6 @@ const terminalResultFromSession = ({ sessionId, controls, records, sessionLabel 
 };
 
 /**
- * Recovers a terminal response from an exact persistent `codex exec` session.
- *
- * This is deliberately separate from native usage collection: a CLI session is
- * identified by its captured thread ID, not by subagent metadata. The returned
- * response is for the parent to consume; callers must not add it to the JSONL
- * telemetry log because review bodies are intentionally not logged.
- */
-export const collectCodexCliSessionResult = (
-  { sessionId, modelApplied, reasoningApplied } = {},
-  {
-    sessionsRoot = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions"),
-    startedAt,
-    endedAt = new Date().toISOString(),
-    repoRoot,
-  } = {},
-) => {
-  const exact = exactCliSessionData(
-    { sessionId, modelApplied, reasoningApplied },
-    { sessionsRoot, startedAt, endedAt, repoRoot },
-  );
-  if (exact.status !== "available") return exact;
-
-  return terminalResultFromSession({
-    sessionId,
-    controls: exact.controls,
-    records: exact.records,
-    sessionLabel: "persistent CLI session",
-  });
-};
-
-/**
  * Recovers a terminal response from an exact native reviewer transcript. The
  * session handle is the native agent path (or its rollout ID when exposed).
  */
@@ -789,78 +685,8 @@ const inspectExactSession = ({
 };
 
 /**
- * Inspects an exact CLI reviewer session without resuming it. An in-progress
- * session is observationally active or stalled based on its last JSONL write;
- * neither state claims that the underlying service has stopped.
- */
-export const inspectCodexCliReviewerSession = ({
-  logPath,
-  reviewerId,
-  sessionsRoot,
-  timestamp,
-  staleAfterMs = 120_000,
-} = {}) => {
-  if (!logPath) fail("logPath is required");
-  if (!reviewerId) fail("reviewerId is required");
-  if (!Number.isFinite(staleAfterMs) || staleAfterMs < 0)
-    fail("staleAfterMs must be a non-negative finite number");
-
-  const { events } = runIdentity(logPath);
-  const start = latestReviewerSessionStart(events, reviewerId, "codex_cli");
-  if (!start) {
-    return {
-      status: "unavailable",
-      reason: "no codex_cli reviewer session start exists for this reviewer",
-      reviewerId,
-    };
-  }
-
-  const data = start.data;
-  const observedAt = isoTimestamp(timestamp);
-  const exact = exactCliSessionData(
-    {
-      sessionId: data.sessionId,
-      modelApplied: data.modelApplied,
-      reasoningApplied: data.reasoningApplied,
-    },
-    {
-      sessionsRoot,
-      startedAt: events[0].timestamp,
-      endedAt: observedAt,
-      repoRoot: events[0].repo?.root,
-    },
-  );
-  if (exact.status !== "available") return { reviewerId, ...exact };
-
-  const recovered = collectCodexCliSessionResult(
-    {
-      sessionId: data.sessionId,
-      modelApplied: data.modelApplied,
-      reasoningApplied: data.reasoningApplied,
-    },
-    {
-      sessionsRoot,
-      startedAt: events[0].timestamp,
-      endedAt: observedAt,
-      repoRoot: events[0].repo?.root,
-    },
-  );
-  return inspectExactSession({
-    reviewerId,
-    exact,
-    recovered,
-    observedAt,
-    staleAfterMs,
-    activeAction:
-      "Poll this exact session again after a bounded wait; do not resume or replace it.",
-    stalledAction:
-      "This session has been quiet past the threshold. Inspect its final events, record the diagnostic, then use the one permitted same-identity retry only if it remains unavailable.",
-  });
-};
-
-/**
- * Inspects a native Sol/Terra-style reviewer transcript without sending it a
- * follow-up. Native launch status can lag its persisted task completion.
+ * Inspects a reviewer transcript without sending it a follow-up. Agent status
+ * can lag its persisted task completion.
  */
 export const inspectCodexNativeReviewerSession = ({
   logPath,
@@ -966,33 +792,23 @@ export const inspectReviewerSessions = ({
   for (const event of events) {
     if (event.event !== "reviewer_session_started") continue;
     const reviewerId = canonicalReviewerId(event.data);
-    const launchMechanism = event.data?.launchMechanism;
-    if (!reviewerId || !["native", "codex_cli"].includes(launchMechanism)) continue;
-    latestStarts.set(reviewerId, launchMechanism);
+    if (!reviewerId || event.data?.launchMechanism !== "native") continue;
+    latestStarts.set(reviewerId);
   }
 
   const reviewers = [...latestStarts.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([reviewerId, launchMechanism]) => {
-      const inspection =
-        launchMechanism === "native"
-          ? inspectCodexNativeReviewerSession({
-              logPath,
-              reviewerId,
-              sessionsRoot,
-              timestamp: observedAt,
-              staleAfterMs,
-            })
-          : inspectCodexCliReviewerSession({
-              logPath,
-              reviewerId,
-              sessionsRoot,
-              timestamp: observedAt,
-              staleAfterMs,
-            });
+    .map(([reviewerId]) => {
+      const inspection = inspectCodexNativeReviewerSession({
+        logPath,
+        reviewerId,
+        sessionsRoot,
+        timestamp: observedAt,
+        staleAfterMs,
+      });
       const { lastAgentMessage, ...diagnostic } = inspection;
       return {
-        launchMechanism,
+        launchMechanism: "native",
         ...diagnostic,
         ...(typeof lastAgentMessage === "string" ? { hasRecoveredFinalAnswer: true } : {}),
         deadline: deadlineStateFor({ inspection: diagnostic, softDeadlineMs, hardDeadlineMs }),
@@ -1044,208 +860,6 @@ export const inspectReviewerSessions = ({
         .filter((reviewer) => reviewer.deadline.state === "hard_exceeded")
         .map((reviewer) => reviewer.reviewerId),
     },
-  };
-};
-
-/**
- * Starts one persistent, read-only CLI reviewer and records its thread ID as
- * soon as Codex emits it. The raw JSON stream stays outside the structured run
- * log so review bodies and diagnostics are not copied into telemetry.
- */
-export const launchCodexCliReviewer = async ({
-  logPath,
-  reviewerId,
-  model,
-  reasoning,
-  promptFile,
-  outputFile,
-  sessionsRoot,
-  codexCommand = "codex",
-} = {}) => {
-  if (!logPath || !reviewerId || !model || !reasoning || !promptFile || !outputFile) {
-    fail("logPath, reviewerId, model, reasoning, promptFile, and outputFile are required");
-  }
-  if (!existsSync(promptFile)) fail(`promptFile does not exist: ${promptFile}`);
-  if (existsSync(outputFile)) fail(`outputFile already exists: ${outputFile}`);
-
-  mkdirSync(dirname(outputFile), { recursive: true });
-  writeFileSync(outputFile, "", { encoding: "utf8", flag: "wx" });
-  const prompt = readFileSync(promptFile);
-  const args = [
-    "exec",
-    "--model",
-    model,
-    "-c",
-    `model_reasoning_effort=${JSON.stringify(reasoning)}`,
-    "-c",
-    'approval_policy="never"',
-    "--strict-config",
-    "--sandbox",
-    "read-only",
-    "--json",
-    "-",
-  ];
-  const child = spawn(codexCommand, args, { stdio: ["pipe", "pipe", "pipe"] });
-  let stdoutBuffer = "";
-  let sessionId = null;
-  let launchRecorded = false;
-  let stderrBytes = 0;
-
-  const recordThreadStarted = (line) => {
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      return;
-    }
-    if (
-      message?.type !== "thread.started" ||
-      typeof message.thread_id !== "string" ||
-      launchRecorded
-    )
-      return;
-    sessionId = message.thread_id;
-    appendEvent({
-      logPath,
-      event: "reviewer_session_started",
-      data: {
-        reviewerId,
-        launchMechanism: "codex_cli",
-        sessionId,
-        modelRequested: model,
-        reasoningRequested: reasoning,
-      },
-    });
-    launchRecorded = true;
-  };
-
-  child.stdout.on("data", (chunk) => {
-    const text = chunk.toString("utf8");
-    appendFileSync(outputFile, text, "utf8");
-    stdoutBuffer += text;
-    let newline;
-    while ((newline = stdoutBuffer.indexOf("\n")) !== -1) {
-      recordThreadStarted(stdoutBuffer.slice(0, newline));
-      stdoutBuffer = stdoutBuffer.slice(newline + 1);
-    }
-  });
-  child.stderr.on("data", (chunk) => {
-    stderrBytes += chunk.length;
-  });
-  child.stdin.end(prompt);
-
-  const close = await new Promise((resolvePromise) => {
-    child.once("error", (error) =>
-      resolvePromise({ exitCode: null, signal: null, errorMessage: error.message }),
-    );
-    child.once("close", (exitCode, signal) => resolvePromise({ exitCode, signal }));
-  });
-  if (stdoutBuffer.length > 0) recordThreadStarted(stdoutBuffer);
-
-  if (!sessionId) {
-    const reason = close.errorMessage
-      ? "codex CLI could not start before emitting thread.started"
-      : "codex CLI exited without emitting thread.started";
-    appendEvent({
-      logPath,
-      event: "reviewer_session_failed",
-      data: {
-        reviewerId,
-        phase: "initial",
-        reason,
-        clientExitCode: close.exitCode,
-        clientSignal: close.signal,
-      },
-    });
-    return {
-      reviewerId,
-      status: "unavailable",
-      reason,
-      clientExitCode: close.exitCode,
-      clientSignal: close.signal,
-      outputFile,
-      stderrBytes,
-    };
-  }
-
-  const { events } = runIdentity(logPath);
-  const exact = exactCliSessionData(
-    { sessionId },
-    {
-      sessionsRoot,
-      startedAt: events[0].timestamp,
-      repoRoot: events[0].repo?.root,
-    },
-  );
-  if (exact.status === "available") {
-    appendEvent({
-      logPath,
-      event: "reviewer_session_controls_verified",
-      data: {
-        reviewerId,
-        sessionId,
-        modelApplied: exact.controls.model,
-        reasoningApplied: exact.controls.reasoning,
-      },
-    });
-  } else {
-    appendEvent({
-      logPath,
-      event: "reviewer_session_observed",
-      data: {
-        reviewerId,
-        lifecycle: "unavailable",
-        reason: exact.reason,
-      },
-    });
-  }
-
-  const inspection = inspectCodexCliReviewerSession({ logPath, reviewerId, sessionsRoot });
-  return {
-    reviewerId,
-    sessionId,
-    clientExitCode: close.exitCode,
-    clientSignal: close.signal,
-    outputFile,
-    stderrBytes,
-    inspection,
-  };
-};
-
-export const recoverCodexCliReviewerResult = ({
-  logPath,
-  reviewerId,
-  sessionsRoot,
-  timestamp,
-} = {}) => {
-  if (!logPath) fail("logPath is required");
-  if (!reviewerId) fail("reviewerId is required");
-  const { events } = runIdentity(logPath);
-  const start = latestReviewerSessionStart(events, reviewerId, "codex_cli");
-  if (!start) {
-    return {
-      status: "unavailable",
-      reason: "no codex_cli reviewer session start exists for this reviewer",
-      reviewerId,
-    };
-  }
-
-  const data = start.data;
-  return {
-    reviewerId,
-    ...collectCodexCliSessionResult(
-      {
-        sessionId: data.sessionId,
-        modelApplied: data.modelApplied,
-        reasoningApplied: data.reasoningApplied,
-      },
-      {
-        sessionsRoot,
-        startedAt: events[0].timestamp,
-        endedAt: timestamp || new Date().toISOString(),
-        repoRoot: events[0].repo?.root,
-      },
-    ),
   };
 };
 
@@ -1346,22 +960,6 @@ export const collectCodexSessionUsage = (
     }
   }
 
-  const cliCandidatesByReviewer = new Map();
-  const cliReasonsByReviewer = new Map();
-  for (const reviewer of reviewers.filter((entry) => entry.launchMechanism === "codex_cli")) {
-    const exact = exactCliSessionData(
-      {
-        sessionId: reviewer.sessionId || reviewer.sessionIdentifier,
-        modelApplied: reviewer.modelApplied,
-        reasoningApplied: reviewer.reasoningApplied,
-      },
-      { sessionsRoot, startedAt, endedAt, repoRoot },
-    );
-    if (exact.status === "available")
-      cliCandidatesByReviewer.set(reviewer.reviewerId, exact.candidate);
-    else cliReasonsByReviewer.set(reviewer.reviewerId, exact.reason);
-  }
-
   const enrichReviewer = (reviewer, index, candidate, source, reason) => {
     const reviewerId = reviewer.reviewerId || `reviewer-${index + 1}`;
     const expectedInvocationCount = invocationsFor(reviewer).length;
@@ -1441,15 +1039,6 @@ export const collectCodexSessionUsage = (
         nativeCandidatesByReviewer.get(reviewerId),
         "native",
         nativeReason,
-      );
-    }
-    if (reviewer.launchMechanism === "codex_cli") {
-      return enrichReviewer(
-        reviewer,
-        index,
-        cliCandidatesByReviewer.get(reviewerId),
-        "codex_cli",
-        cliReasonsByReviewer.get(reviewerId),
       );
     }
     return enrichReviewer(
@@ -1827,10 +1416,15 @@ const expectedReviewersFromConfiguration = (configuration = {}) => {
   for (const entry of requestedCohort) {
     if (!entry || typeof entry.model !== "string") continue;
     const count = Number.isInteger(entry.count) && entry.count > 0 ? entry.count : 0;
+    const reasoningRequested = typeof entry.reasoning === "string" ? entry.reasoning : null;
     const base = reviewerIdBaseForModel(entry.model);
     const ordinal = ordinals.get(base) || 0;
     for (let index = 1; index <= count; index += 1) {
-      expected.push({ reviewerId: `${base}-${ordinal + index}`, modelRequested: entry.model });
+      expected.push({
+        reviewerId: `${base}-${ordinal + index}`,
+        modelRequested: entry.model,
+        ...(reasoningRequested ? { reasoningRequested } : {}),
+      });
     }
     ordinals.set(base, ordinal + count);
   }
@@ -1853,17 +1447,23 @@ const includeExpectedReviewers = (summary, configuration) => {
       if (!existing.launchMechanism) {
         existing.expected = true;
         if (!existing.modelRequested) existing.modelRequested = expected.modelRequested;
-        if (!existing.reasoningRequested && typeof configuration.reasoningRequested === "string")
-          existing.reasoningRequested = configuration.reasoningRequested;
+        if (!existing.reasoningRequested) {
+          const reasoningRequested =
+            expected.reasoningRequested || configuration.reasoningRequested;
+          if (typeof reasoningRequested === "string")
+            existing.reasoningRequested = reasoningRequested;
+        }
       }
       continue;
     }
     reviewers.push({
       ...expected,
       expected: true,
-      ...(typeof configuration.reasoningRequested === "string"
-        ? { reasoningRequested: configuration.reasoningRequested }
-        : {}),
+      ...(typeof expected.reasoningRequested === "string"
+        ? { reasoningRequested: expected.reasoningRequested }
+        : typeof configuration.reasoningRequested === "string"
+          ? { reasoningRequested: configuration.reasoningRequested }
+          : {}),
       continuityChecks: [],
       rounds: [],
     });
@@ -2429,9 +2029,6 @@ const help = `Usage:
   review-run-log.mjs templates
   review-run-log.mjs start [--repo-root <path>] [--output-root <path>] [--data-json <object>]
   review-run-log.mjs append --log <path> --event <lower_snake_case> [--data-json <object>]
-  review-run-log.mjs launch-cli-reviewer --log <path> --reviewer-id <id> --model <model> --reasoning <level> --prompt-file <path> --output-file <path> [--sessions-root <path>]
-  review-run-log.mjs recover-cli-session --log <path> --reviewer-id <id> [--sessions-root <path>]
-  review-run-log.mjs inspect-cli-session --log <path> --reviewer-id <id> [--sessions-root <path>] [--stale-after-ms <ms>]
   review-run-log.mjs inspect-native-session --log <path> --reviewer-id <id> [--sessions-root <path>] [--stale-after-ms <ms>]
   review-run-log.mjs inspect-reviewers --log <path> [--sessions-root <path>] [--stale-after-ms <ms>] [--soft-deadline-ms <ms>] [--hard-deadline-ms <ms>] [--record]
   review-run-log.mjs finish --log <path> [--collect-codex-usage] [--sessions-root <path>] [--data-json <summary>]
@@ -2467,40 +2064,6 @@ const main = async () => {
       logPath: options.log,
       event: options.event,
       data: readDataOption(options, "data"),
-    });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    return;
-  }
-  if (command === "launch-cli-reviewer") {
-    const result = await launchCodexCliReviewer({
-      logPath: options.log,
-      reviewerId: options["reviewer-id"],
-      model: options.model,
-      reasoning: options.reasoning,
-      promptFile: options["prompt-file"],
-      outputFile: options["output-file"],
-      sessionsRoot: options["sessions-root"],
-    });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    return;
-  }
-  if (command === "recover-cli-session") {
-    const result = recoverCodexCliReviewerResult({
-      logPath: options.log,
-      reviewerId: options["reviewer-id"],
-      sessionsRoot: options["sessions-root"],
-    });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    return;
-  }
-  if (command === "inspect-cli-session") {
-    const staleAfterMs =
-      options["stale-after-ms"] === undefined ? undefined : Number(options["stale-after-ms"]);
-    const result = inspectCodexCliReviewerSession({
-      logPath: options.log,
-      reviewerId: options["reviewer-id"],
-      sessionsRoot: options["sessions-root"],
-      staleAfterMs,
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;

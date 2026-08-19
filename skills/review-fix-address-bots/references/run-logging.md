@@ -31,12 +31,12 @@ node scripts/review-run-log.mjs append \
 
 Useful events include `target_integrated`, `reviewer_session_started`, `reviewer_session_controls_verified`, `reviewer_session_observed`, `reviewer_session_cancelled`, `reviewer_pass_completed`, `reviewer_pass_failed`, `reviewer_continuity_verified`, `reviewer_continuity_failed`, `finding_classified`, `validation_completed`, `push_completed`, `review_bot_loop_completed`, and `run_blocked`. Events may evolve; keep names lower snake case.
 
-Record experimental inputs when they become known: custom-versus-bundled review prompt source and SHA-256 fingerprint, target/base/head SHAs, diff size, the requested reviewer cohort, round limits, requested reasoning, launch mechanisms, retries, and relevant skill options. The helper fingerprints the skill instructions and logger automatically. Hash custom prompts instead of storing their contents. The `start` example shows the default cohort; replace its configuration with the resolved user override when applicable.
+Record experimental inputs when they become known: custom-versus-bundled review prompt source and SHA-256 fingerprint, target/base/head SHAs, diff size, the requested reviewer cohort, round limits, requested reasoning, retries, and relevant skill options. The helper fingerprints the skill instructions and logger automatically. Hash custom prompts instead of storing their contents. The `start` example shows the default cohort; replace its configuration with the resolved user override when applicable.
 
 For every reviewer pass, record:
 
 - stable `reviewerId`, phase (`initial` or `remediation`), and one-based round,
-- invocation start/completion order, launch mechanism, and session identifier when available,
+- invocation start/completion order and reviewer session identifier when available,
 - requested and actually applied model and reasoning level separately,
 - continuity-handshake result for every persistent session,
 - stable deduplicated `findingIds` once available,
@@ -49,27 +49,13 @@ The finish helper reconstructs the canonical reviewer rounds and continuity chec
 events. This is the source of truth; do not hand-write aliases such as `reviewer`,
 `finding_ids`, `id`, `model`, or `initialFindingIds` in the finish summary.
 
-If a persistent CLI reviewer finishes but its command output is unavailable, recover it before
-retrying with:
-
-```bash
-node scripts/review-run-log.mjs recover-cli-session \
-  --log "$REVIEW_RUN_LOG" \
-  --reviewer-id "$REVIEWER_ID"
-```
-
-The command validates the exact `codex exec` session ID, repository, applied model, applied
-reasoning, and completed final answer. It emits the recovered result on stdout but does not write
-the review body to the run log. Record a concise recovery outcome and then the normal pass event.
-
-If recovery is `in_progress`, use `inspect-cli-session` before deciding what happened. For a native
-reviewer that appears in progress, use `inspect-native-session` with the same log and reviewer ID.
-Both commands verify the exact persisted session and report a lifecycle, last activity/event, quiet
-duration, and recommended action. Record only that concise diagnostic in `reviewer_session_observed`;
-do not copy raw output or review text. `active` and `stalled` sessions must be polled again on the
-same handle. `stalled` is observational, not a failure. A CLI retry is allowed only after inspection
-is `unavailable`. A native retry is also allowed after its hard deadline, but only after the parent
-re-inspects, interrupts, and confirms clear the exact native handle.
+For a native reviewer with a missing or unreadable result, use `inspect-native-session` with the
+same log and reviewer ID before retrying. It verifies the exact persisted session and reports a
+lifecycle, last activity/event, quiet duration, and recommended action. Record only that concise
+diagnostic in `reviewer_session_observed`; do not copy raw output or review text. `active` and
+`stalled` sessions must be polled again on the same handle. `stalled` is observational, not a
+failure. Retry only after inspection is `unavailable`, or after the parent re-inspects,
+interrupts, and confirms clear the exact native handle following a hard deadline.
 
 During every bounded wait, run `inspect-reviewers --record` with the configured stale, soft, and hard
 deadline values. It writes one concise `reviewer_session_observed` event per launched reviewer and
@@ -143,7 +129,7 @@ node scripts/review-run-log.mjs finish \
   --data-file .context/review-run-summary.json
 ```
 
-For native Codex reviewers, `--collect-codex-usage` deterministically discovers the native cohort under `${CODEX_HOME:-~/.codex}/sessions`, matches the run window, repository root, parent thread, and reviewer IDs, verifies that each session's completed task count equals its recorded review-plus-continuity invocation count, and copies the final cumulative `token_count` values into the finished log. For persistent CLI reviewers it instead matches each exact captured thread ID, repository, and verified controls. Collection is independent per reviewer: a mixed native/CLI cohort or unavailable worker produces `partial` collection while retaining verified usage for every completed session. It refuses ambiguous sessions or mismatched invocation counts instead of guessing. Record exact session IDs in the summary whenever the runtime exposes them; they further constrain discovery.
+For native Codex reviewers, `--collect-codex-usage` deterministically discovers the cohort under `${CODEX_HOME:-~/.codex}/sessions`, matches the run window, repository root, parent thread, and reviewer IDs, verifies that each session's completed task count equals its recorded review-plus-continuity invocation count, and copies the final cumulative `token_count` values into the finished log. Collection is independent per reviewer, so an unavailable worker produces `partial` collection while retaining verified usage for every completed session. It refuses ambiguous sessions or mismatched invocation counts instead of guessing. Record exact session IDs in the summary whenever the runtime exposes them; they further constrain discovery.
 
 Inspect the collection returned by `finish`. If any reviewer has neither tokens nor duration, diagnose before calling `report`:
 
