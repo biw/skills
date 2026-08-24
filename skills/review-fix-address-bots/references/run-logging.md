@@ -116,11 +116,11 @@ Always attempt `finish`, including for blocked or failed runs. Pass a summary wi
 
 Include one reviewer object for every configured reviewer, even when it found no issues. Preserve applied model and reasoning fields so comparisons and labels reflect what actually ran rather than what was merely requested; leave an unavailable `modelApplied` or `reasoningApplied` unset so the helper reports it as `unknown`. Record every continuity attempt in `continuityChecks`, including retries and `tokenUsage: null` when the runtime exposes no accounting.
 
-Use `complete` only when every requested reviewer has a verified session, review round, and
-continuity check. Use `partial` when terminally unavailable reviewers were excluded and the active
-cohort completed the remaining workflow. Use `blocked` or `failed` when the active cohort could not
-safely continue. The helper retains every reviewer's lifecycle events and each completed worker's
-telemetry.
+Use `complete` only when every reviewer has a verified session, review round, and continuity check.
+For an incomplete cohort, finish with `partial`, `blocked`, or `failed`; the helper retains its
+events and every completed worker's telemetry. Before generating the user-facing report, however,
+repair every reviewer that lacks both token usage and an exact duration rather than rendering it as
+`n/a` or omitting the table.
 
 ```bash
 node scripts/review-run-log.mjs finish \
@@ -139,12 +139,10 @@ node scripts/review-run-log.mjs diagnose-codex-usage \
 ```
 
 Its per-reviewer reason distinguishes an absent/ambiguous session, a still-active session, and a
-reviewer-ledger invocation mismatch. Inspect or wait for an active exact session and repair missing
-launch/pass/continuity ledger events or exact handles for completed invocations. Do not relaunch a
-terminally unavailable reviewer solely for telemetry. Re-run `finish --collect-codex-usage` after
-repairing actionable ledger problems. Call `report` only when the diagnostic returns `complete`;
-otherwise describe the unavailable reviewer and telemetry coverage in prose and omit the usage
-table.
+reviewer-ledger invocation mismatch. Inspect or wait for an active exact session; repair the missing
+launch/pass/continuity ledger event or exact handle for a mismatch; use the allowed same-identity
+relaunch path when no session exists. Re-run `finish --collect-codex-usage` after the repair. Do not
+call `report` until the diagnostic returns `complete`.
 
 The helper derives reviewer session and invocation counts, continuity-invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, token totals with per-field coverage, and exact completed-task duration when available. Invocation and cumulative token and duration metrics include both review rounds and continuity checks; initial token metrics remain limited to the initial review pass. The helper also groups reviewers only by applied model and derives initial finding classifications, valid and model-unique valid finding IDs, cross-model overlap, per-reviewer usage, and estimated costs.
 
@@ -157,7 +155,7 @@ node scripts/review-run-log.mjs report --log "$REVIEW_RUN_LOG" \
   > .context/reviewer-usage-report.md
 ```
 
-Append `.context/reviewer-usage-report.md` verbatim as the final content of the user-facing workflow summary only after `report` succeeds. Do not manually recompute, reorder, reformat, or add prose around it. `report` fails rather than rendering a table when any reviewer has neither tokens nor duration; diagnose repairable telemetry, but omit the table when the missing reviewer is terminally unavailable. A successful report renders this exact Markdown column order, with `Estimated cost` immediately after `Total` and runtime-derived cumulative `Agent time` last:
+Append `.context/reviewer-usage-report.md` verbatim as the final content of the user-facing workflow summary only after `report` succeeds. Do not manually recompute, reorder, reformat, or add prose around it. `report` fails rather than rendering a table when any reviewer has neither tokens nor duration; diagnose and repair that reviewer first. A successful report renders this exact Markdown column order, with `Estimated cost` immediately after `Total` and runtime-derived cumulative `Agent time` last:
 
 ```markdown
 | Reviewer    |   Input | Cached input | Output | Reasoning |   Total | Estimated cost | Agent time |
