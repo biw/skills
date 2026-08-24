@@ -64,13 +64,7 @@ node scripts/review-run-log.mjs inspect-reviewers \
 
 The soft deadline is a warning. The hard deadline begins at the current `task_started` (or session start when absent). Before classifying a reviewer as failed, inspect its exact persisted session. `active`, `stalled`, and one `in_progress` result are not failures. The watcher does not interrupt workers.
 
-For a hard-exceeded reviewer, immediately inspect the exact session once more. If it remains non-terminal, call `agents.interrupt_agent` with the inspection's `nativeHandle`, never its persisted `sessionId`; confirm with `agents.list_agents` that it stopped; then append `reviewer_session_cancelled` with reviewer ID, persisted session ID, native handle, phase, reason, and deadline. Never use a broad kill, interrupt another reviewer, or probe an initial review with a follow-up. One fresh initial retry may use a distinct task name such as `sol_1_retry_1`, but retains reviewer ID `sol-1`. If that retry also misses the hard deadline, mark the reviewer unavailable and continue with the completed reviewers as a partial cohort. A hard-exceeded continuity session follows the active-cohort restart rule after clearing the exact handle.
-
-### Continue with a partial cohort
-
-After retries and exact-session recovery are exhausted, completed initial reviewers become the active cohort. Continue to verify and act on their findings when at least one reviewer completed with verified controls. Do not use an unavailable reviewer's incomplete output, launch a substitute, or treat its absence as a clean review. Record the dropout and keep the final run status `partial`, even if fixes, validation, push, and the bot loop all succeed. If no reviewer completed, finish `blocked` without editing.
-
-This partial-cohort rule applies only to reviewers that are terminally unavailable after the bounded recovery above. Failed control verification, unsafe target mutation, missing mutation authority, and other workflow safety blockers still block editing.
+For a hard-exceeded reviewer, immediately inspect the exact session once more. If it remains non-terminal, call `agents.interrupt_agent` with the inspection's `nativeHandle`, never its persisted `sessionId`; confirm with `agents.list_agents` that it stopped; then append `reviewer_session_cancelled` with reviewer ID, persisted session ID, native handle, phase, reason, and deadline. Never use a broad kill, interrupt another reviewer, or probe an initial review with a follow-up. One fresh initial retry may use a distinct task name such as `sol_1_retry_1`, but retains reviewer ID `sol-1`; a second hard deadline finishes `partial` or `blocked`. A hard-exceeded continuity session follows the full-cohort restart rule after clearing the exact handle.
 
 For a missing or unreadable result, inspect the exact session before retrying:
 
@@ -82,7 +76,7 @@ The recovered result must match exactly one reviewer handle, repository, applied
 
 ### Preserve session continuity
 
-Before fixes, create a gitignored `.context/reviewer-sessions.json` ledger with stable reviewer ID, requested/applied controls, reviewer handle, initial fingerprint, and continuity state. Include unavailable reviewers and their terminal state so coverage loss remains explicit. Never store credentials, prompts, or review bodies. Before editing, resume every completed initial session with its original controls and read-only boundary; require only `SESSION_CONTINUITY_OK`. Unavailable reviewers do not require a handshake and cannot join remediation. Record a completed-task duration when available. If any required handshake fails, discard every report and restart the active cohort once against the unchanged target; a second failure blocks editing. Remediation uses only these verified handles.
+Before fixes, create a gitignored `.context/reviewer-sessions.json` ledger with stable reviewer ID, requested/applied controls, reviewer handle, initial fingerprint, and continuity state. Never store credentials, prompts, or review bodies. Before editing, resume every initial session with its original controls and read-only boundary; require only `SESSION_CONTINUITY_OK`. Record a completed-task duration when available. If any handshake fails, discard every report and restart the full cohort once against the unchanged target; a second failure blocks editing. Remediation uses only these verified handles.
 
 ## 2. Run independent initial reviews
 
@@ -90,7 +84,7 @@ Before fixes, create a gitignored `.context/reviewer-sessions.json` ledger with 
 2. Give each reviewer the same self-contained raw prompt, integrated target SHA and fingerprint, conflict summary, and role boundary. Do not expose another reviewer's findings or primary-agent conclusions. Require file, minimal line range, severity, scenario, and rationale for every finding.
 3. Fingerprint `HEAD`, staged/unstaged diffs, status, and relevant untracked contents. Keep the target unchanged through all initial reports and continuity checks. Launch concurrently where possible and queue the rest unchanged. Apply the launch, watchdog, recovery, and hard-deadline cleanup rules above.
 4. Log each launch, control verification, observation, cancellation, and completed or failed pass using the canonical fields above. Use stable reviewer and finding IDs. Record actual token usage and `durationMs` only when exposed.
-5. Apply the continuity protocol above to every completed reviewer before editing. A terminally unavailable reviewer does not block work when the active cohort is non-empty.
+5. Apply the continuity protocol above before editing.
 6. Verify the target fingerprint after the handshakes. On unexpected mutation, inspect ownership and rerun the full cohort once against a stable target. Repeated instability is a blocker.
 
 ## 3. Verify findings and fix
@@ -123,9 +117,9 @@ Resume every continuity-verified session with its original controls and read-onl
 
 ## Finish and report
 
-Always attempt `finish`, even for a blocked/failed run, using event-derived reviewers/findings plus actual bot, validation, status, and SHA outcomes. Use `partial` when one or more requested reviewers were unavailable but the active cohort completed the remaining workflow; use `blocked` or `failed` when work could not safely continue. Use `--collect-codex-usage`; collection is per reviewer, so completed sessions still contribute real tokens, cost, and duration when another worker is unavailable. Diagnose and repair missing telemetry for completed invocations, but never relaunch a terminally unavailable reviewer solely to obtain usage data. Generate the usage section with `report` only when its telemetry gate passes; otherwise report the unavailable reviewer and telemetry coverage in prose without fabricating or manually calculating metrics. Treat model comparisons as one-run observations and label partial-cohort comparisons accordingly.
+Always attempt `finish`, even for a blocked/failed run, using event-derived reviewers/findings plus actual bot, validation, status, and SHA outcomes. Use `partial`, `blocked`, or `failed` instead of `complete` when the cohort cannot finish. Use `--collect-codex-usage`; collection is per reviewer, so completed sessions still contribute real tokens, cost, and duration when another worker is unavailable. Do not report while any reviewer lacks both tokens and an exact duration. Run `diagnose-codex-usage`, resolve its per-reviewer session/ledger cause (including an allowed relaunch when needed), then run `finish --collect-codex-usage` again. Generate the usage section with `report` only after that gate passes; do not manually calculate or reformat it. Treat model comparisons as one-run observations.
 
-Report the requested and active cohorts, applied controls, persistent sessions and continuity/retries, unavailable reviewers, log path and derived invocation/round/usage coverage, shared/unique findings and model comparison, base SHA/integration/conflicts, all finding dispositions, remediation rounds and disagreements, validation per push, commits/PR, bot-loop outcomes, and remaining blockers. `report` may refuse incomplete telemetry, so append its table verbatim only after it succeeds. Do not add pricing caveats. When the table is present, keep `Estimated cost` immediately after `Total` and `Agent time` last; put nothing after it.
+Report the applied cohort/controls, persistent sessions and continuity/retries, log path and derived invocation/round/usage coverage, shared/unique findings and model comparison, base SHA/integration/conflicts, all finding dispositions, remediation rounds and disagreements, validation per push, commits/PR, bot-loop outcomes, and remaining blockers. `report` refuses an incomplete-telemetry cohort, so append its table verbatim only after it succeeds. Do not add pricing or telemetry caveats. Keep `Estimated cost` immediately after `Total` and `Agent time` last; put nothing after it.
 
 ## Resources
 
