@@ -17,7 +17,7 @@ Resolve the directory containing the skill's `SKILL.md`, then start the log befo
 ```bash
 node scripts/review-run-log.mjs start \
   --repo-root "$PWD" \
-  --data-json '{"requestedReviewerCount":5,"reviewerCohortRequested":[{"model":"gpt-5.6-sol","count":1},{"model":"gpt-5.6-terra","count":1},{"model":"gpt-5.6-luna","count":3}],"reasoningRequested":"high","watcherIntervalMs":30000,"softReviewerDeadlineMs":600000,"hardReviewerDeadlineMs":1200000,"remediationRoundLimit":3,"reviewBotLoopLimit":8}'
+  --data-json '{"requestedReviewerCount":5,"reviewerCohortRequested":[{"model":"gpt-5.6-sol","count":1,"reasoning":"high"},{"model":"gpt-5.6-terra","count":1,"reasoning":"xhigh"},{"model":"gpt-5.6-luna","count":1,"reasoning":"max"},{"model":"gpt-5.6-luna","count":2,"reasoning":"xhigh"}],"watcherIntervalMs":30000,"softReviewerDeadlineMs":600000,"hardReviewerDeadlineMs":1200000,"hardReviewerDeadlineMsByModel":{"gpt-5.6-luna":1800000},"remediationRoundLimit":3,"reviewBotLoopLimit":8}'
 ```
 
 Keep the returned `logPath` in `.context`. Append an event immediately after each reviewer pass so partial runs remain useful if later work stops:
@@ -58,12 +58,16 @@ failure. Retry only after inspection is `unavailable`, or after the parent re-in
 interrupts, and confirms clear the exact native handle following a hard deadline.
 
 During every bounded wait, run `inspect-reviewers --record` with the configured stale, soft, and hard
-deadline values. It writes one concise `reviewer_session_observed` event per launched reviewer and
-returns the IDs that crossed each deadline. The command never interrupts anything. On a hard-exceeded
-native reviewer, repeat the exact native inspection, then use the agent runtime's exact-handle interrupt
-and post-interrupt status check before appending `reviewer_session_cancelled`. Treat an interrupt as a
-terminal event for that handle; never reuse it for continuity. Keep a retry's stable reviewer ID but log
-its fresh session handle so collection and the final partial report remain accurate.
+deadline values. Pass model-specific hard deadlines with
+`--hard-deadline-ms-by-model '{"gpt-5.6-luna":1800000}'`; unlisted models use the default
+`--hard-deadline-ms`. The command writes one concise `reviewer_session_observed` event per launched
+reviewer and returns the IDs that crossed each deadline. It never interrupts anything. On a
+hard-exceeded native reviewer, repeat the exact native inspection, then use the agent runtime's
+exact-handle interrupt and post-interrupt status check before appending
+`reviewer_session_cancelled`. Treat an interrupt as a terminal event for that handle; never reuse it
+for continuity. Keep a retry's stable reviewer ID but log its fresh session handle so collection and
+the final partial report remain accurate. When the permitted retry also times out, record the reviewer
+as exhausted and continue with completed reviewers rather than discarding their findings.
 
 Do not log full prompts, full review bodies, code contents, credentials, environment variables, or auth material. Finding IDs and concise summaries are enough for later analysis.
 
@@ -118,9 +122,9 @@ Include one reviewer object for every configured reviewer, even when it found no
 
 Use `complete` only when every reviewer has a verified session, review round, and continuity check.
 For an incomplete cohort, finish with `partial`, `blocked`, or `failed`; the helper retains its
-events and every completed worker's telemetry. Before generating the user-facing report, however,
-repair every reviewer that lacks both token usage and an exact duration rather than rendering it as
-`n/a` or omitting the table.
+events and every completed worker's telemetry. Use `partial` when an exhausted reviewer was excluded
+and completed reviewers carried the workflow. Do not relaunch an exhausted reviewer only to make
+telemetry complete.
 
 ```bash
 node scripts/review-run-log.mjs finish \
@@ -140,9 +144,11 @@ node scripts/review-run-log.mjs diagnose-codex-usage \
 
 Its per-reviewer reason distinguishes an absent/ambiguous session, a still-active session, and a
 reviewer-ledger invocation mismatch. Inspect or wait for an active exact session; repair the missing
-launch/pass/continuity ledger event or exact handle for a mismatch; use the allowed same-identity
-relaunch path when no session exists. Re-run `finish --collect-codex-usage` after the repair. Do not
-call `report` until the diagnostic returns `complete`.
+launch/pass/continuity ledger event or exact handle for a mismatch. Use the allowed same-identity
+relaunch path when no session exists unless that reviewer already exhausted its permitted timeout
+retry. Re-run `finish --collect-codex-usage` after a repair. Do not call `report` unless the diagnostic
+returns `complete`; omit the generated table from a partial report when an exhausted reviewer keeps
+the telemetry cohort incomplete.
 
 The helper derives reviewer session and invocation counts, continuity-invocation counts, rounds per reviewer, initial and cumulative unique findings, pairwise shared/unique finding IDs with Jaccard overlap, reviewers that found issues, GitHub bot counts, token totals with per-field coverage, and exact completed-task duration when available. Invocation and cumulative token and duration metrics include both review rounds and continuity checks; initial token metrics remain limited to the initial review pass. The helper also groups reviewers only by applied model and derives initial finding classifications, valid and model-unique valid finding IDs, cross-model overlap, per-reviewer usage, and estimated costs.
 
