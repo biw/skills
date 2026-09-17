@@ -31,6 +31,7 @@ export const LOG_TEMPLATES = Object.freeze({
     watcherIntervalMs: 30_000,
     softReviewerDeadlineMs: 600_000,
     hardReviewerDeadlineMs: 1_200_000,
+    hardReviewerDeadlineMsByModel: Object.freeze({ "gpt-5.6-luna": 1_800_000 }),
     remediationRoundLimit: 3,
     reviewBotLoopLimit: 8,
   }),
@@ -757,12 +758,12 @@ export const inspectCodexNativeReviewerSession = ({
 
 const deadlineStateFor = ({ inspection, softDeadlineMs, hardDeadlineMs }) => {
   if (inspection.lifecycle === "complete" || inspection.lifecycle === "unavailable")
-    return { state: "terminal", elapsedMs: null };
+    return { state: "terminal", elapsedMs: null, hardDeadlineMs };
   const elapsedMs = inspection.activeTaskElapsedMs;
-  if (!Number.isFinite(elapsedMs)) return { state: "unknown", elapsedMs: null };
-  if (elapsedMs >= hardDeadlineMs) return { state: "hard_exceeded", elapsedMs };
-  if (elapsedMs >= softDeadlineMs) return { state: "soft_exceeded", elapsedMs };
-  return { state: "within_budget", elapsedMs };
+  if (!Number.isFinite(elapsedMs)) return { state: "unknown", elapsedMs: null, hardDeadlineMs };
+  if (elapsedMs >= hardDeadlineMs) return { state: "hard_exceeded", elapsedMs, hardDeadlineMs };
+  if (elapsedMs >= softDeadlineMs) return { state: "soft_exceeded", elapsedMs, hardDeadlineMs };
+  return { state: "within_budget", elapsedMs, hardDeadlineMs };
 };
 
 /**
@@ -776,6 +777,7 @@ export const inspectReviewerSessions = ({
   staleAfterMs = 120_000,
   softDeadlineMs = 600_000,
   hardDeadlineMs = 1_200_000,
+  hardDeadlineMsByModel = {},
   recordObservations = false,
 } = {}) => {
   if (!logPath) fail("logPath is required");
@@ -785,6 +787,12 @@ export const inspectReviewerSessions = ({
     fail("softDeadlineMs must be a non-negative finite number");
   if (!Number.isFinite(hardDeadlineMs) || hardDeadlineMs < softDeadlineMs)
     fail("hardDeadlineMs must be a finite number no smaller than softDeadlineMs");
+  assertObject(hardDeadlineMsByModel, "hardDeadlineMsByModel");
+  for (const [model, deadlineMs] of Object.entries(hardDeadlineMsByModel)) {
+    if (!model || !Number.isFinite(deadlineMs) || deadlineMs < softDeadlineMs) {
+      fail("hardDeadlineMsByModel values must be finite numbers no smaller than softDeadlineMs");
+    }
+  }
 
   const { events } = runIdentity(logPath);
   const observedAt = isoTimestamp(timestamp);
@@ -793,12 +801,12 @@ export const inspectReviewerSessions = ({
     if (event.event !== "reviewer_session_started") continue;
     const reviewerId = canonicalReviewerId(event.data);
     if (!reviewerId || event.data?.launchMechanism !== "native") continue;
-    latestStarts.set(reviewerId);
+    latestStarts.set(reviewerId, event.data);
   }
 
   const reviewers = [...latestStarts.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([reviewerId]) => {
+    .map(([reviewerId, start]) => {
       const inspection = inspectCodexNativeReviewerSession({
         logPath,
         reviewerId,
@@ -807,11 +815,17 @@ export const inspectReviewerSessions = ({
         staleAfterMs,
       });
       const { lastAgentMessage, ...diagnostic } = inspection;
+      const model = start.modelApplied || start.modelRequested;
+      const reviewerHardDeadlineMs = hardDeadlineMsByModel[model] ?? hardDeadlineMs;
       return {
         launchMechanism: "native",
         ...diagnostic,
         ...(typeof lastAgentMessage === "string" ? { hasRecoveredFinalAnswer: true } : {}),
-        deadline: deadlineStateFor({ inspection: diagnostic, softDeadlineMs, hardDeadlineMs }),
+        deadline: deadlineStateFor({
+          inspection: diagnostic,
+          softDeadlineMs,
+          hardDeadlineMs: reviewerHardDeadlineMs,
+        }),
       };
     });
   if (recordObservations) {
@@ -831,7 +845,7 @@ export const inspectReviewerSessions = ({
           deadlineState: reviewer.deadline.state,
           deadlineMs:
             reviewer.deadline.state === "hard_exceeded"
-              ? hardDeadlineMs
+              ? reviewer.deadline.hardDeadlineMs
               : reviewer.deadline.state === "soft_exceeded"
                 ? softDeadlineMs
                 : null,
@@ -845,6 +859,7 @@ export const inspectReviewerSessions = ({
     staleAfterMs,
     softDeadlineMs,
     hardDeadlineMs,
+    hardDeadlineMsByModel,
     observationsRecorded: recordObservations ? reviewers.length : 0,
     reviewers,
     summary: {
@@ -2030,7 +2045,7 @@ const help = `Usage:
   review-run-log.mjs start [--repo-root <path>] [--output-root <path>] [--data-json <object>]
   review-run-log.mjs append --log <path> --event <lower_snake_case> [--data-json <object>]
   review-run-log.mjs inspect-native-session --log <path> --reviewer-id <id> [--sessions-root <path>] [--stale-after-ms <ms>]
-  review-run-log.mjs inspect-reviewers --log <path> [--sessions-root <path>] [--stale-after-ms <ms>] [--soft-deadline-ms <ms>] [--hard-deadline-ms <ms>] [--record]
+  review-run-log.mjs inspect-reviewers --log <path> [--sessions-root <path>] [--stale-after-ms <ms>] [--soft-deadline-ms <ms>] [--hard-deadline-ms <ms>] [--hard-deadline-ms-by-model <json>] [--record]
   review-run-log.mjs finish --log <path> [--collect-codex-usage] [--sessions-root <path>] [--data-json <summary>]
   review-run-log.mjs diagnose-codex-usage --log <path> [--sessions-root <path>]
   review-run-log.mjs report --log <path>
@@ -2083,12 +2098,21 @@ const main = async () => {
   if (command === "inspect-reviewers") {
     const numberOption = (name) =>
       options[name] === undefined ? undefined : Number(options[name]);
+    let hardDeadlineMsByModel;
+    if (options["hard-deadline-ms-by-model"] !== undefined) {
+      try {
+        hardDeadlineMsByModel = JSON.parse(options["hard-deadline-ms-by-model"]);
+      } catch (error) {
+        fail(`hard-deadline-ms-by-model is not valid JSON: ${error.message}`);
+      }
+    }
     const result = inspectReviewerSessions({
       logPath: options.log,
       sessionsRoot: options["sessions-root"],
       staleAfterMs: numberOption("stale-after-ms"),
       softDeadlineMs: numberOption("soft-deadline-ms"),
       hardDeadlineMs: numberOption("hard-deadline-ms"),
+      hardDeadlineMsByModel,
       recordObservations: Boolean(options.record),
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);

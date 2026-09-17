@@ -426,11 +426,21 @@ test("watches reviewer sessions with soft and hard per-turn deadlines", () => {
       sessionsRoot,
       softDeadlineMs: 10_000,
       hardDeadlineMs: 20_000,
+      hardDeadlineMsByModel: { "gpt-5.6-luna": 30_000 },
       staleAfterMs: 10_000,
       timestamp: "2026-08-05T21:40:25.000Z",
     });
-    assert.deepEqual(hard.summary.hardExceededReviewerIds, ["luna-1", "sol-1"]);
+    assert.deepEqual(hard.summary.hardExceededReviewerIds, ["sol-1"]);
+    assert.deepEqual(hard.summary.softExceededReviewerIds, ["luna-1"]);
     assert.ok(hard.reviewers.every((reviewer) => reviewer.deadline.elapsedMs === 21_000));
+    assert.equal(
+      hard.reviewers.find((reviewer) => reviewer.reviewerId === "luna-1")?.deadline.hardDeadlineMs,
+      30_000,
+    );
+    assert.equal(
+      hard.reviewers.find((reviewer) => reviewer.reviewerId === "sol-1")?.deadline.hardDeadlineMs,
+      20_000,
+    );
     assert.throws(
       () =>
         inspectReviewerSessions({
@@ -440,6 +450,17 @@ test("watches reviewer sessions with soft and hard per-turn deadlines", () => {
           hardDeadlineMs: 10_000,
         }),
       /hardDeadlineMs/,
+    );
+    assert.throws(
+      () =>
+        inspectReviewerSessions({
+          logPath,
+          sessionsRoot,
+          softDeadlineMs: 20_000,
+          hardDeadlineMs: 30_000,
+          hardDeadlineMsByModel: { "gpt-5.6-luna": 10_000 },
+        }),
+      /hardDeadlineMsByModel/,
     );
   } finally {
     rmSync(root, { force: true, recursive: true });

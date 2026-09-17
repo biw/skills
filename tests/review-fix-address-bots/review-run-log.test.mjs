@@ -30,6 +30,7 @@ test("canonical templates produce a finishable event-driven run", () => {
     watcherIntervalMs: 30_000,
     softReviewerDeadlineMs: 600_000,
     hardReviewerDeadlineMs: 1_200_000,
+    hardReviewerDeadlineMsByModel: { "gpt-5.6-luna": 1_800_000 },
     remediationRoundLimit: 3,
     reviewBotLoopLimit: 8,
   });
