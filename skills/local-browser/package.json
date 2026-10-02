@@ -1,0 +1,9 @@
+{
+  "name": "local-browser-skill",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.63.0"
+  },
+  "packageManager": "pnpm@11.5.2"
+}
