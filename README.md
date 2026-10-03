@@ -20,8 +20,22 @@ npx skills add biw/skills
 - [`conductor-setup`](./skills/conductor-setup/SKILL.md): configure `.conductor/settings.toml`, migrate legacy `conductor.json`, and set up local/cloud Conductor workspace scripts; invoke it as `$conductor-setup` in Codex.
 - [`detailed-pr-description`](./skills/detailed-pr-description/SKILL.md): assess test coverage or draft/update review-ready GitHub PR descriptions with change context, risks, follow-up work, and focused code references.
 - [`electron-flamegraph`](./skills/electron-flamegraph/SKILL.md): profile Electron main-process CPU usage and analyze `.cpuprofile` files.
+- [`local-browser`](./skills/local-browser/SKILL.md): share Chromium across local coding agents with separate task state, task deadlines, and automatic browser cleanup.
 - [`review-fix-address-bots`](./skills/review-fix-address-bots/SKILL.md): compare five persistent GPT-5.6 reviews by default: one Sol, one Terra, and three Luna (or a requested cohort); resolve findings through bounded critique and close GitHub review-bot feedback loops.
 - [`setup-cloudflare-pr-previews`](./skills/setup-cloudflare-pr-previews/SKILL.md): set up, audit, or repair Cloudflare Workers PR previews with aliased URLs, branch-isolated D1 databases, migrations, binding injection, stable environments, and PR-close cleanup.
+
+## Browser skill validation
+
+The local-browser integration test uses real Chromium and runs when
+`LOCAL_BROWSER_INTEGRATION=1`. Install its pinned dependencies and browser first:
+
+```bash
+pnpm --dir skills/local-browser install --ignore-workspace --frozen-lockfile
+pnpm --dir skills/local-browser exec playwright install chromium
+LOCAL_BROWSER_INTEGRATION=1 pnpm validate
+```
+
+The regular validation command skips this integration test when the flag is absent.
 
 ## License
 

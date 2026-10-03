@@ -1,0 +1,6 @@
+interface:
+  display_name: "Local Browser"
+  short_description: "Share Chromium and clean up browser tasks automatically"
+  default_prompt: "Use $local-browser to check a local development page with the shared browser helper."
+policy:
+  allow_implicit_invocation: true
